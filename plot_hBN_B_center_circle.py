@@ -16,9 +16,9 @@ r_N = (2/3) * a0 + (1/3) * a1
 # Create figure
 fig, ax = plt.subplots(figsize=(12, 11))
 
-# Define tiling range
-n_tiles_x = 4  # Number of tiles in a0 direction
-n_tiles_y = 4  # Number of tiles in a1 direction
+# Define tiling range - increased to show more cells
+n_tiles_x = 5  # Number of tiles in a0 direction
+n_tiles_y = 5  # Number of tiles in a1 direction
 
 # Store all atoms for plotting
 all_B_atoms = []
@@ -112,12 +112,12 @@ ax.text(primary_r_B[0], primary_r_B[1], 'B', ha='center', va='center', fontsize=
 ax.text(primary_r_N[0], primary_r_N[1], 'N', ha='center', va='center', fontsize=12,
         fontweight='bold', color='darkblue', zorder=11)
 
-# Draw circle centered at N in primary cell with radius sqrt(3)*l
+# Draw circle centered at B in primary cell with radius sqrt(3)*l
 circle_radius = np.sqrt(3) * l
-circle = Circle((primary_r_N[0], primary_r_N[1]), circle_radius, 
-                fill=False, edgecolor='black', linewidth=2, 
+circle = Circle((primary_r_B[0], primary_r_B[1]), circle_radius, 
+                fill=False, edgecolor='red', linewidth=2, 
                 linestyle='--', alpha=0.7, zorder=4,
-                label=f'Circle centered at N (r=√3l={circle_radius:.3f} Å)')
+                label=f'Circle centered at B (r=√3l={circle_radius:.3f} Å)')
 ax.add_patch(circle)
 
 # Add grid for reference
@@ -159,7 +159,7 @@ ax.text(0.02, 0.98, textstr, transform=ax.transAxes, fontsize=11,
         verticalalignment='top', bbox=props, family='monospace')
 
 plt.tight_layout()
-plt.savefig('hBN_tiling_N_center.png', dpi=300, bbox_inches='tight')
+plt.savefig('hBN_tiling_circle_at_B.png', dpi=300, bbox_inches='tight')
 # plt.show()
 
 # Print information
@@ -173,4 +173,4 @@ print(f"\nNumber of unit cells shown: {(n_tiles_x-1) * (n_tiles_y-1)}")
 print(f"Total atoms shown: {len(all_B_atoms)} B atoms, {len(all_N_atoms)} N atoms")
 print(f"\nThe primary unit cell is highlighted in black")
 print(f"Each unit cell contains 1 B atom and 1 N atom")
-print(f"\nCircle centered at N with radius √3·l = {circle_radius:.4f} Å")
+print(f"\nCircle centered at B with radius √3·l = {circle_radius:.4f} Å")

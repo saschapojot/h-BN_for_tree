@@ -5,7 +5,7 @@ import os
 import json
 import numpy as np
 from datetime import datetime
-
+from copy import deepcopy
 # ==============================================================================
 # Main preprocessing pipeline for tight-binding model setup
 # ==============================================================================
@@ -399,54 +399,539 @@ print("ORBITAL COMPLETION FINISHED")
 print("=" * 60)
 
 
+
+
+
+def compute_dist(center_frac,center_cell, dest_frac, basis,search_range,radius):
+    """
+
+    :param center_frac:
+    :param center_cell:
+    :param dest_frac:
+    :param basis:
+    :param search_range:
+    :param radius:
+    :return:
+    """
+    f0,f1=center_frac
+    n0,n1=center_cell
+    
+    g0,g1=dest_frac
+    # m0,m1=dest_cell
+    
+    a0,a1,a2=basis
+    
+    center_coord=np.array(
+        (f0+n0)*a0+(f1+n1)*a1
+    )
+    
+    rst=[]
+    for j0 in range(-search_range,search_range+1):
+        for j1 in range(-search_range,search_range+1):
+            dest_coord=np.array(
+                (g0+j0)*a0+(g1+j1)*a1
+            )
+            dist=np.linalg.norm(center_coord-dest_coord,ord=2)
+            if dist<=radius:
+                rst.append([[j0,j1,0],[g0,g1,0]])
+
+    return rst
+
+
+atom_types=[]
+fractional_positions=[]
+for i, pos in enumerate(parsed_config['atom_positions']):
+    type_name=pos["atom_type"]
+    frac_pos=pos["fractional_coordinates"]
+    # print(f"type_name={type_name}, frac_pos={frac_pos}")
+    atom_types.append(type_name)
+    fractional_positions.append(np.array(frac_pos))
+
 # ==============================================================================
-# STEP 7: Find neighboring atoms in supercell
+# STEP 7: Partition BB_atoms into equivalent sets under symmetry
 # ==============================================================================
 print("\n" + "=" * 60)
-print("FINDING NEIGHBORING ATOMS")
+print("PARTITIONING BB ATOMS INTO EQUIVALENT SETS")
 print("=" * 60)
-#
-# print(f"Parsed configuration summary:")
-# for key, value in parsed_config.items():
-#     print(f"  {key}: {value}")
+ind0=0
+atm0=atom_types[ind0]
+center_frac0=(fractional_positions[ind0])[:2]
+center_cell=[0,0]
+lattice_basis=np.array(parsed_config['lattice_basis'])
+l=1.05*np.sqrt(3)
 
-# Run find_neighbors.py to identify neighboring atoms
-find_neighbor_result = subprocess.run(
-    ["python3", "./hoppin_term_relations/find_neighbors.py"],
-    input=combined_input_json,
-    capture_output=True,
-    text=True
-)
+neigboring_BB=compute_dist(center_frac0,center_cell,center_frac0,lattice_basis,7,l)
+print(neigboring_BB)
+def frac_to_cartesian(cell,frac_coord,basis):
+    n0,n1,n2=cell
+    f0,f1,f2=frac_coord
+    a0,a1,a2=basis
+    return (n0+f0)*a0+(n1+f1)*a1+(n2+f2)*a2
 
-# Print any error messages from stderr
-if find_neighbor_result.stderr:
-    print("Debug output from find_neighbors.py:")
-    print(find_neighbor_result.stderr)
+neigboring_BB_cartesian=[]
+for item in neigboring_BB:
+    cell,frac_coord=item
+    cart_coord=frac_to_cartesian(cell,frac_coord,lattice_basis)
+    neigboring_BB_cartesian.append([cell,cart_coord])
 
-# Check if the subprocess completed successfully
-if find_neighbor_result.returncode != 0:
-    print(f"Error: find_neighbors.py exited with code {find_neighbor_result.returncode}")
-    sys.exit(find_neighbor_result.returncode)
+for item in neigboring_BB_cartesian:
+    cell, cart_coord=item
+    print(f"cell={cell}, cart_coord={cart_coord}")
 
-# Parse the atom_pairs from stdout (JSON format)
-try:
-    atom_pairs = json.loads(find_neighbor_result.stdout)
-    print(f"\nSuccessfully loaded {len(atom_pairs)} atom pairs")
 
-    # Optional: Print summary statistics
-    if atom_pairs:
-        distances = [pair['distance'] for pair in atom_pairs]
-        unique_distances = sorted(set(distances))
-        print(f"Number of unique distances: {len(unique_distances)}")
-        print(f"Distance range: {min(distances):.6f} to {max(distances):.6f}")
+eps=1e-8
 
-except json.JSONDecodeError as e:
-    print(f"Error: Failed to parse JSON output from find_neighbors.py")
-    print(f"JSON decode error: {e}")
-    print(f"Output received (first 500 chars):")
-    print(find_neighbor_result.stdout[:500])
-    sys.exit(1)
+space_group_bilbao_cart=[]
+for item in space_group_representations["space_group_matrices_cartesian"]:
+    space_group_bilbao_cart.append(np.array(item))
 
-# Now atom_pairs is available as a Python list of dictionaries
-# Each element has the structure defined in find_neighbors.py
-print("\nAtom pairs are ready for further processing")
+for i,mat in enumerate(space_group_bilbao_cart):
+    print(f"===========matrix {i}: ")
+    print(f"{mat}")
+
+class atomIndex():
+    def __init__(self,cell,frac_coord,atom_name,basis):
+        self.n0=cell[0]
+        self.n1=cell[1]
+        self.n2=cell[2]
+        self.atom_name=atom_name
+        self.frac_coord=frac_coord
+        self.basis=basis
+        a0,a1,a2=basis
+        f0,f1,f2=frac_coord
+        cart_coord=(self.n0+f0)*a0+(self.n1+f1)*a1+(self.n2+f2)*a2
+        self.cart_coord=cart_coord
+
+    def __str__(self):
+        """String representation for print()"""
+        return (f"Atom: {self.atom_name}, "
+                f"Cell: [{self.n0}, {self.n1}, {self.n2}], "
+                f"Frac: {self.frac_coord}, "
+                f"Cart: {self.cart_coord}")
+
+    def __repr__(self):
+        """Detailed representation for debugging"""
+        return (f"atomIndex(cell=[{self.n0}, {self.n1}, {self.n2}], "
+                f"frac_coord={self.frac_coord}, "
+                f"atom_name='{self.atom_name}')")
+
+#############center=B, neighbor=B
+BB_atoms=[]
+for item in neigboring_BB:
+    cell,frac_coord=item
+    atm=atomIndex(cell,frac_coord,"B",lattice_basis)
+    BB_atoms.append(atm)
+B_center_frac=list(center_frac0)+[0]
+
+B_center_atom=atomIndex([0,0,0],B_center_frac,atm0,lattice_basis)
+
+def get_next(center_atom,nghb_atom,group_mat):
+    R=group_mat[:,:3]
+    b=group_mat[:,3]
+    # print(R)
+    # print(b)
+    center_cart_coord=center_atom.cart_coord
+    nghb_cart_coord=nghb_atom.cart_coord
+    diff_vec=nghb_cart_coord-center_cart_coord
+    next_cart_coord=center_cart_coord+R@diff_vec+b
+    return next_cart_coord
+
+
+# ==============================================================================
+# STEP 8: Partition all BB_atoms into equivalent sets
+# ==============================================================================
+
+
+
+
+class hopping():
+    def __init__(self, to_atom, from_atom, class_id, operation_idx, rotation_matrix, translation_vector):
+        self.to_atom = to_atom
+        self.from_atom = from_atom
+        self.class_id = class_id
+        self.operation_idx = operation_idx  # Which space group operation
+        self.rotation_matrix = rotation_matrix  # R (3x3 matrix)
+        self.translation_vector = translation_vector  # b (3-vector)
+
+    def conjugate(self):
+        return [deepcopy(self.from_atom), deepcopy(self.to_atom)]
+
+    def __repr__(self):
+        return (f"hopping(from={self.from_atom}, to={self.to_atom}, "
+                f"class_id={self.class_id}, op={self.operation_idx})")
+
+
+print("\n" + "=" * 60)
+print("PARTITIONING ALL BB_ATOMS INTO EQUIVALENT SETS")
+print("=" * 60)
+
+# Find identity operation index
+identity_idx = None
+for idx, group_mat in enumerate(space_group_bilbao_cart):
+    if np.allclose(group_mat[:3, :3], np.eye(3)) and np.allclose(group_mat[:3, 3], 0):
+        identity_idx = idx
+        print(f"Identity operation found at index {identity_idx}")
+        break
+
+if identity_idx is None:
+    print("WARNING: Identity operation not found in space_group_bilbao_cart!")
+
+equivalent_atom_sets_BB = []
+equivalent_hopping_sets_BB = []
+set_counter = 0
+
+while len(BB_atoms) > 0:
+    set_counter += 1
+    print(f"\n--- Equivalent Set {set_counter} ---")
+
+    # Take the first atom from remaining BB_atoms as seed
+    seed_atom = BB_atoms[0]
+    print(f"Seed atom: {seed_atom}")
+
+    # Calculate seed atom's distance to center
+    seed_distance = np.linalg.norm(seed_atom.cart_coord - B_center_atom.cart_coord)
+    print(f"Seed distance to center: {seed_distance:.6f}")
+
+    # Dictionary to track which operation generated each equivalent atom
+    # Key: atom index in BB_atoms, Value: (operation index, atom object)
+    equivalent_dict = {}
+
+    # List to store hoppings for this equivalent set
+    current_hopping_set = []
+
+    # First, assign seed atom to identity operation
+    equivalent_dict[0] = (identity_idx, seed_atom)
+
+    # Get identity matrix components
+    identity_matrix = space_group_bilbao_cart[identity_idx]
+    identity_rotation = identity_matrix[:3, :3]
+    identity_translation = identity_matrix[:3, 3]
+
+    # Create hopping for seed atom with identity operation
+    seed_hop = hopping(
+        to_atom=B_center_atom,
+        from_atom=seed_atom,
+        class_id=set_counter - 1,
+        operation_idx=identity_idx,
+        rotation_matrix=identity_rotation,
+        translation_vector=identity_translation
+    )
+    current_hopping_set.append(seed_hop)
+
+    # Apply all space group operations to the seed atom
+    for op_idx, group_mat in enumerate(space_group_bilbao_cart):
+        # Skip identity operation (already handled for seed)
+        if op_idx == identity_idx:
+            continue
+
+        # Check if this operation leaves the center atom invariant
+        center_transformed = get_next(B_center_atom, B_center_atom, group_mat)
+        diff_center = center_transformed - B_center_atom.cart_coord
+
+        if np.linalg.norm(diff_center) > 1e-6:
+            # Skip this operation if it moves the center atom
+            continue
+
+        # Get the transformed coordinate from seed atom
+        next_coord = get_next(B_center_atom, seed_atom, group_mat)
+
+        # Calculate distance of transformed coordinate to center
+        next_distance = np.linalg.norm(next_coord - B_center_atom.cart_coord)
+
+        # Check if distance is equal to seed distance (within tolerance)
+        if abs(next_distance - seed_distance) > 1e-6:
+            # Skip this transformed atom if distance doesn't match
+            continue
+
+        # Check if this coordinate matches any atom in BB_atoms
+        for idx, atm in enumerate(BB_atoms):
+            if idx not in equivalent_dict:  # Skip already found atoms
+                diff = next_coord - atm.cart_coord
+                if np.linalg.norm(diff) < 1e-6:
+                    # Record this atom and which operation generated it
+                    equivalent_dict[idx] = (op_idx, atm)
+
+                    # Extract rotation and translation from group matrix
+                    rotation = group_mat[:3, :3]
+                    translation = group_mat[:3, 3]
+
+                    # Create hopping: from equivalent atom to center
+                    hop = hopping(
+                        to_atom=B_center_atom,
+                        from_atom=atm,
+                        class_id=set_counter - 1,
+                        operation_idx=op_idx,
+                        rotation_matrix=rotation,
+                        translation_vector=translation
+                    )
+                    current_hopping_set.append(hop)
+
+                    print(f"  Operation {op_idx} generates atom {idx}, distance={next_distance:.6f}")
+
+    # Get list of equivalent atom indices
+    equivalent_indices = sorted(equivalent_dict.keys())
+
+    print(f"Found {len(equivalent_indices)} equivalent atoms: indices {equivalent_indices}")
+
+    # Collect the actual atoms for this equivalent set
+    current_atom_set = [BB_atoms[idx] for idx in equivalent_indices]
+    equivalent_atom_sets_BB.append(current_atom_set)
+    equivalent_hopping_sets_BB.append(current_hopping_set)
+
+    # Print details of atoms in this set
+    print("Atoms in this set:")
+    for idx in equivalent_indices:
+        atm = BB_atoms[idx]
+        op_idx, _ = equivalent_dict[idx]
+        dist = np.linalg.norm(atm.cart_coord - B_center_atom.cart_coord)
+        op_str = f"op {op_idx}" + (" (identity)" if op_idx == identity_idx else "")
+        print(f"  Atom {idx} ({op_str}): Cell=[{atm.n0:2d},{atm.n1:2d},{atm.n2:2d}], "
+              f"Frac=[{atm.frac_coord[0]:.4f},{atm.frac_coord[1]:.4f},{atm.frac_coord[2]:.4f}], "
+              f"Dist={dist:.6f}")
+
+    # Remove equivalent atoms from BB_atoms
+    BB_atoms = [atm for i, atm in enumerate(BB_atoms) if i not in equivalent_indices]
+
+    print(f"Remaining BB_atoms: {len(BB_atoms)}")
+
+print("\n" + "=" * 60)
+print("PARTITIONING COMPLETE")
+print("=" * 60)
+print(f"Total number of equivalent sets: {len(equivalent_atom_sets_BB)}")
+print(f"Total number of hopping sets: {len(equivalent_hopping_sets_BB)}")
+
+
+for j,st in enumerate(equivalent_hopping_sets_BB):
+    print(f"set {j} ********************************************************")
+    for hp in st:
+        print(hp)
+
+
+# Updated vertex class with children and parent
+class vertex():
+    def __init__(self, hopping, type, identity_idx, parent=None):
+        self.hopping = deepcopy(hopping)
+        self.type = type  # "linear" or "hermitian" for child, None for root
+        self.is_root = (hopping.operation_idx == identity_idx)
+        self.children = []  # List of child vertex objects
+        self.parent = parent  # Reference to parent vertex (None for root)
+
+    def add_child(self, child_vertex):
+        """Add a child vertex to this vertex"""
+        self.children.append(child_vertex)
+        child_vertex.parent = self  # Set this vertex as the child's parent
+
+    def __repr__(self):
+        root_str = "ROOT" if self.is_root else "CHILD"
+        parent_str = "None" if self.parent is None else f"op={self.parent.hopping.operation_idx}"
+        return (f"vertex(type={self.type}, {root_str}, "
+                f"op={self.hopping.operation_idx}, "
+                f"parent={parent_str}, "
+                f"children={len(self.children)})")
+
+
+
+# Store all trees (now just storing the root vertices)
+tree_roots = []
+for set_idx, hopping_set in enumerate(equivalent_hopping_sets_BB):
+    print(f"\n--- Building tree for Set {set_idx} ---")
+    print(f"Total hoppings in set: {len(hopping_set)}")
+    # Find the root hopping (identity operation)
+    root_hopping = None
+    child_hoppings = []
+    for hop in hopping_set:
+        if hop.operation_idx == identity_idx:
+            root_hopping = hop
+        else:
+            child_hoppings.append(hop)
+    if root_hopping is None:
+        print(f"WARNING: No identity hopping found in set {set_idx}!")
+        continue
+    print(f"Root hopping: {root_hopping}")
+    print(f"Number of child hoppings: {len(child_hoppings)}")
+    # Create root vertex
+    root_vertex = vertex(hopping=root_hopping, type=None, identity_idx=identity_idx)
+    # Create child vertices and link them to root
+    for hop in child_hoppings:
+        child_type = "linear"
+        child_v = vertex(hopping=hop, type=child_type, identity_idx=identity_idx)
+        # Add this child to the root's children list
+        root_vertex.add_child(child_v)
+    # Store the root (which now contains references to all its children)
+    tree_roots.append(root_vertex)
+    print(f"Tree built: 1 root with {len(root_vertex.children)} children")
+    print(f"  Root: {root_vertex}")
+    for i, child in enumerate(root_vertex.children[:3]):
+        print(f"    Child {i}: {child}")
+    if len(root_vertex.children) > 3:
+        print(f"    ... and {len(root_vertex.children) - 3} more children")
+
+
+
+# ==============================================================================
+# STEP 9: Partition BN_atoms into equivalent sets under symmetry
+# ==============================================================================
+ind1=1
+atm1=atom_types[ind1]
+# print(f"ind1={ind1}, atm1={atm1}")
+center_frac1=(fractional_positions[ind1])[:2]
+center_cell=[0,0]
+lattice_basis=np.array(parsed_config['lattice_basis'])
+l=1.05*np.sqrt(3)
+
+neigboring_BN=compute_dist(center_frac0,center_cell,center_frac1,lattice_basis,7,l)
+neigboring_BN_cartesian=[]
+for item in neigboring_BN:
+    cell,frac_coord=item
+    cart_coord = frac_to_cartesian(cell, frac_coord, lattice_basis)
+    neigboring_BN_cartesian.append([cell,cart_coord])
+
+
+# for item in neigboring_BN_cartesian:
+#     cell, cart_coord=item
+#     print(f"cell={cell}, cart_coord={cart_coord}")
+
+# ==============================================================================
+# STEP 10: Partition all BN_atoms into equivalent sets
+# ==============================================================================
+# Create BN_atoms list (analogous to BB_atoms)
+BN_atoms = []
+for item in neigboring_BN:
+    cell, frac_coord = item
+    atm = atomIndex(cell, frac_coord, "N", lattice_basis)  # N atoms
+    BN_atoms.append(atm)
+print("\n" + "=" * 60)
+print("PARTITIONING ALL BN_ATOMS INTO EQUIVALENT SETS")
+print("=" * 60)
+
+equivalent_atom_sets_BN = []
+equivalent_hopping_sets_BN = []
+set_counter = 0
+while len(BN_atoms) > 0:
+    set_counter += 1
+    print(f"\n--- Equivalent Set {set_counter} ---")
+    # Take the first atom from remaining BN_atoms as seed
+    seed_atom = BN_atoms[0]
+    print(f"Seed atom: {seed_atom}")
+    # Calculate seed atom's distance to center
+    seed_distance = np.linalg.norm(seed_atom.cart_coord - B_center_atom.cart_coord)
+    print(f"Seed distance to center: {seed_distance:.6f}")
+    equivalent_dict = {}
+    current_hopping_set = []
+    # First, assign seed atom to identity operation
+    equivalent_dict[0] = (identity_idx, seed_atom)
+    # Get identity matrix components
+    identity_matrix = space_group_bilbao_cart[identity_idx]
+    identity_rotation = identity_matrix[:3, :3]
+    identity_translation = identity_matrix[:3, 3]
+    # Create hopping for seed atom with identity operation
+    seed_hop = hopping(
+        to_atom=B_center_atom,
+        from_atom=seed_atom,
+        class_id=set_counter - 1,
+        operation_idx=identity_idx,
+        rotation_matrix=identity_rotation,
+        translation_vector=identity_translation
+    )
+    current_hopping_set.append(seed_hop)
+    # Apply all space group operations to the seed atom
+    for op_idx, group_mat in enumerate(space_group_bilbao_cart):
+        # Skip identity operation (already handled for seed)
+        if op_idx == identity_idx:
+            continue
+        # Check if this operation leaves the center atom invariant
+        center_transformed = get_next(B_center_atom, B_center_atom, group_mat)
+        diff_center = center_transformed - B_center_atom.cart_coord
+        if np.linalg.norm(diff_center) > 1e-6:
+            continue
+        # Get the transformed coordinate from seed atom
+        next_coord = get_next(B_center_atom, seed_atom, group_mat)
+        # Calculate distance of transformed coordinate to center
+        next_distance = np.linalg.norm(next_coord - B_center_atom.cart_coord)
+        # Check if distance is equal to seed distance (within tolerance)
+        if abs(next_distance - seed_distance) > 1e-6:
+            continue
+        # Check if this coordinate matches any atom in BN_atoms
+        for idx, atm in enumerate(BN_atoms):
+            if idx not in equivalent_dict:
+                diff = next_coord - atm.cart_coord
+                if np.linalg.norm(diff) < 1e-6:
+                    equivalent_dict[idx] = (op_idx, atm)
+                    rotation = group_mat[:3, :3]
+                    translation = group_mat[:3, 3]
+                    hop = hopping(
+                        to_atom=B_center_atom,
+                        from_atom=atm,
+                        class_id=set_counter - 1,
+                        operation_idx=op_idx,
+                        rotation_matrix=rotation,
+                        translation_vector=translation
+                    )
+                    current_hopping_set.append(hop)
+                    print(f"  Operation {op_idx} generates atom {idx}, distance={next_distance:.6f}")
+
+    equivalent_indices = sorted(equivalent_dict.keys())
+    print(f"Found {len(equivalent_indices)} equivalent atoms: indices {equivalent_indices}")
+    current_atom_set = [BN_atoms[idx] for idx in equivalent_indices]
+    equivalent_atom_sets_BN.append(current_atom_set)
+    equivalent_hopping_sets_BN.append(current_hopping_set)
+
+    # Remove equivalent atoms from BN_atoms
+    BN_atoms = [atm for i, atm in enumerate(BN_atoms) if i not in equivalent_indices]
+    print(f"Remaining BN_atoms: {len(BN_atoms)}")
+
+print("\n" + "=" * 60)
+print("BN PARTITIONING COMPLETE")
+print("=" * 60)
+print(f"Total number of BN equivalent sets: {len(equivalent_atom_sets_BN)}")
+
+# for j, st in enumerate(equivalent_atom_sets_BN):
+#     print(f"equivalent class {j}: ----------------------------------------------")
+#     for item in st:
+#         print(item)
+
+
+
+# ==============================================================================
+# STEP 11: Build trees for BN hoppings
+# ==============================================================================
+print("\n" + "=" * 60)
+print("BUILDING TREES FOR BN HOPPINGS")
+print("=" * 60)
+
+# Store all BN trees (root vertices)
+tree_roots_BN = []
+
+for set_idx, hopping_set in enumerate(equivalent_hopping_sets_BN):
+    print(f"\n--- Building tree for BN Set {set_idx} ---")
+    print(f"Total hoppings in set: {len(hopping_set)}")
+    # Find the root hopping (identity operation)
+    root_hopping = None
+    child_hoppings = []
+    for hop in hopping_set:
+        if hop.operation_idx == identity_idx:
+            root_hopping = hop
+        else:
+            child_hoppings.append(hop)
+    if root_hopping is None:
+        print(f"WARNING: No identity hopping found in BN set {set_idx}!")
+        continue
+
+    print(f"Root hopping: {root_hopping}")
+    print(f"Number of child hoppings: {len(child_hoppings)}")
+    # Create root vertex
+    root_vertex = vertex(hopping=root_hopping, type=None, identity_idx=identity_idx)
+    # Create child vertices and link them to root
+    for hop in child_hoppings:
+        child_type = "linear"
+        child_v = vertex(hopping=hop, type=child_type, identity_idx=identity_idx)
+        # Add this child to the root's children list
+        root_vertex.add_child(child_v)
+    # Store the root (which now contains references to all its children)
+    tree_roots_BN.append(root_vertex)
+    print(f"Tree built: 1 root with {len(root_vertex.children)} children")
+    print(f"  Root: {root_vertex}")
+    for i, child in enumerate(root_vertex.children[:3]):
+        print(f"    Child {i}: {child}")
+    if len(root_vertex.children) > 3:
+        print(f"    ... and {len(root_vertex.children) - 3} more children")
