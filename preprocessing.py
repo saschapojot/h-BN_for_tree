@@ -935,3 +935,676 @@ for set_idx, hopping_set in enumerate(equivalent_hopping_sets_BN):
         print(f"    Child {i}: {child}")
     if len(root_vertex.children) > 3:
         print(f"    ... and {len(root_vertex.children) - 3} more children")
+
+
+
+
+def print_tree(root, prefix="", is_last=True, show_details=True):
+    """
+    Print a tree structure in a visual format
+
+    Args:
+        root: vertex object (root of tree or subtree)
+        prefix: string prefix for indentation
+        is_last: whether this is the last child at this level
+        show_details: whether to show detailed hopping information
+    """
+    # Determine the connector symbol
+    connector = "└── " if is_last else "├── "
+
+    # Print current node
+    if root.is_root:
+        node_label = "ROOT"
+        style = "╔═══"
+    else:
+        node_label = f"CHILD ({root.type})"
+        style = connector
+
+    # Build the node description
+    hop = root.hopping
+    from_cell = [hop.from_atom.n0, hop.from_atom.n1, hop.from_atom.n2]
+    from_frac = hop.from_atom.frac_coord
+    to_atom_name = hop.to_atom.atom_name
+    from_atom_name = hop.from_atom.atom_name
+
+    distance = np.linalg.norm(hop.from_atom.cart_coord - hop.to_atom.cart_coord)
+
+    if show_details:
+        node_desc = (f"{node_label} | Op={hop.operation_idx:2d} | "
+                     f"{from_atom_name}→{to_atom_name} | "
+                     f"Cell=[{from_cell[0]:2d},{from_cell[1]:2d},{from_cell[2]:2d}] | "
+                     f"Dist={distance:.4f}")
+    else:
+        node_desc = f"{node_label} | Op={hop.operation_idx:2d}"
+
+    print(f"{prefix}{style}{node_desc}")
+
+    # Print children
+    if root.children:
+        # Update prefix for children
+        if root.is_root:
+            new_prefix = prefix + "    "
+        else:
+            extension = "    " if is_last else "│   "
+            new_prefix = prefix + extension
+
+        # Print each child
+        for i, child in enumerate(root.children):
+            is_last_child = (i == len(root.children) - 1)
+            print_tree(child, new_prefix, is_last_child, show_details)
+
+
+# ==============================================================================
+# STEP 12: Partition NB_atoms into equivalent sets under symmetry
+# ==============================================================================
+
+ind1 = 1
+atm1 = atom_types[ind1]
+center_frac1 = (fractional_positions[ind1])[:2]
+center_cell = [0, 0]
+lattice_basis = np.array(parsed_config['lattice_basis'])
+l = 1.05 * np.sqrt(3)
+
+ind0 = 0
+atm0 = atom_types[ind0]
+center_frac0 = (fractional_positions[ind0])[:2]
+
+neigboring_NB = compute_dist(center_frac1, center_cell, center_frac0, lattice_basis, 7, l)
+
+neigboring_NB_cartesian = []
+for item in neigboring_NB:
+    cell, frac_coord = item
+    cart_coord = frac_to_cartesian(cell, frac_coord, lattice_basis)
+    neigboring_NB_cartesian.append([cell, cart_coord])
+
+# Create NB_atoms list (Nitrogen center, Boron neighbors)
+NB_atoms = []
+for item in neigboring_NB:
+    cell, frac_coord = item
+    atm = atomIndex(cell, frac_coord, "B", lattice_basis)  # B atoms
+    NB_atoms.append(atm)
+
+# Create N center atom
+N_center_frac = list(center_frac1) + [0]
+N_center_atom = atomIndex([0, 0, 0], N_center_frac, atm1, lattice_basis)
+
+print("\n" + "=" * 60)
+print("PARTITIONING ALL NB_ATOMS INTO EQUIVALENT SETS")
+print("=" * 60)
+
+equivalent_atom_sets_NB = []
+equivalent_hopping_sets_NB = []
+set_counter = 0
+
+while len(NB_atoms) > 0:
+    set_counter += 1
+    print(f"\n--- Equivalent Set {set_counter} ---")
+
+    # Take the first atom from remaining NB_atoms as seed
+    seed_atom = NB_atoms[0]
+    print(f"Seed atom: {seed_atom}")
+
+    # Calculate seed atom's distance to center (N atom)
+    seed_distance = np.linalg.norm(seed_atom.cart_coord - N_center_atom.cart_coord)
+    print(f"Seed distance to center: {seed_distance:.6f}")
+
+    equivalent_dict = {}
+    current_hopping_set = []
+
+    # First, assign seed atom to identity operation
+    equivalent_dict[0] = (identity_idx, seed_atom)
+
+    # Get identity matrix components
+    identity_matrix = space_group_bilbao_cart[identity_idx]
+    identity_rotation = identity_matrix[:3, :3]
+    identity_translation = identity_matrix[:3, 3]
+
+    # Create hopping for seed atom with identity operation
+    seed_hop = hopping(
+        to_atom=N_center_atom,
+        from_atom=seed_atom,
+        class_id=set_counter - 1,
+        operation_idx=identity_idx,
+        rotation_matrix=identity_rotation,
+        translation_vector=identity_translation
+    )
+    current_hopping_set.append(seed_hop)
+
+    # Apply all space group operations to the seed atom
+    for op_idx, group_mat in enumerate(space_group_bilbao_cart):
+        # Skip identity operation (already handled for seed)
+        if op_idx == identity_idx:
+            continue
+
+        # Check if this operation leaves the center atom (N) invariant
+        center_transformed = get_next(N_center_atom, N_center_atom, group_mat)
+        diff_center = center_transformed - N_center_atom.cart_coord
+
+        if np.linalg.norm(diff_center) > 1e-6:
+            # Skip this operation if it moves the center atom
+            continue
+
+        # Get the transformed coordinate from seed atom
+        next_coord = get_next(N_center_atom, seed_atom, group_mat)
+
+        # Calculate distance of transformed coordinate to center
+        next_distance = np.linalg.norm(next_coord - N_center_atom.cart_coord)
+
+        # Check if distance is equal to seed distance (within tolerance)
+        if abs(next_distance - seed_distance) > 1e-6:
+            # Skip this transformed atom if distance doesn't match
+            continue
+
+        # Check if this coordinate matches any atom in NB_atoms
+        for idx, atm in enumerate(NB_atoms):
+            if idx not in equivalent_dict:  # Skip already found atoms
+                diff = next_coord - atm.cart_coord
+                if np.linalg.norm(diff) < 1e-6:
+                    # Record this atom and which operation generated it
+                    equivalent_dict[idx] = (op_idx, atm)
+
+                    # Extract rotation and translation from group matrix
+                    rotation = group_mat[:3, :3]
+                    translation = group_mat[:3, 3]
+
+                    # Create hopping: from equivalent atom to center
+                    hop = hopping(
+                        to_atom=N_center_atom,
+                        from_atom=atm,
+                        class_id=set_counter - 1,
+                        operation_idx=op_idx,
+                        rotation_matrix=rotation,
+                        translation_vector=translation
+                    )
+                    current_hopping_set.append(hop)
+
+                    print(f"  Operation {op_idx} generates atom {idx}, distance={next_distance:.6f}")
+
+    # Get list of equivalent atom indices
+    equivalent_indices = sorted(equivalent_dict.keys())
+
+    print(f"Found {len(equivalent_indices)} equivalent atoms: indices {equivalent_indices}")
+
+    # Collect the actual atoms for this equivalent set
+    current_atom_set = [NB_atoms[idx] for idx in equivalent_indices]
+    equivalent_atom_sets_NB.append(current_atom_set)
+    equivalent_hopping_sets_NB.append(current_hopping_set)
+
+    # Print details of atoms in this set
+    print("Atoms in this set:")
+    for idx in equivalent_indices:
+        atm = NB_atoms[idx]
+        op_idx, _ = equivalent_dict[idx]
+        dist = np.linalg.norm(atm.cart_coord - N_center_atom.cart_coord)
+        op_str = f"op {op_idx}" + (" (identity)" if op_idx == identity_idx else "")
+        print(f"  Atom {idx} ({op_str}): Cell=[{atm.n0:2d},{atm.n1:2d},{atm.n2:2d}], "
+              f"Frac=[{atm.frac_coord[0]:.4f},{atm.frac_coord[1]:.4f},{atm.frac_coord[2]:.4f}], "
+              f"Dist={dist:.6f}")
+
+    # Remove equivalent atoms from NB_atoms
+    NB_atoms = [atm for i, atm in enumerate(NB_atoms) if i not in equivalent_indices]
+
+    print(f"Remaining NB_atoms: {len(NB_atoms)}")
+
+print("\n" + "=" * 60)
+print("NB PARTITIONING COMPLETE")
+print("=" * 60)
+print(f"Total number of NB equivalent sets: {len(equivalent_atom_sets_NB)}")
+
+# ==============================================================================
+# STEP 13: Build trees for NB hoppings
+# ==============================================================================
+print("\n" + "=" * 60)
+print("BUILDING TREES FOR NB HOPPINGS")
+print("=" * 60)
+
+# Store all NB trees (root vertices)
+tree_roots_NB = []
+for set_idx, hopping_set in enumerate(equivalent_hopping_sets_NB):
+    print(f"\n--- Building tree for NB Set {set_idx} ---")
+    print(f"Total hoppings in set: {len(hopping_set)}")
+    # Find the root hopping (identity operation)
+    root_hopping = None
+    child_hoppings = []
+    for hop in hopping_set:
+        if hop.operation_idx == identity_idx:
+            root_hopping = hop
+        else:
+            child_hoppings.append(hop)
+    if root_hopping is None:
+        print(f"WARNING: No identity hopping found in NB set {set_idx}!")
+        continue
+    print(f"Root hopping: {root_hopping}")
+    print(f"Number of child hoppings: {len(child_hoppings)}")
+    # Create root vertex
+    root_vertex = vertex(hopping=root_hopping, type=None, identity_idx=identity_idx)
+    # Create child vertices and link them to root
+    for hop in child_hoppings:
+        child_type = "linear"
+        child_v = vertex(hopping=hop, type=child_type, identity_idx=identity_idx)
+        # Add this child to the root's children list
+        root_vertex.add_child(child_v)
+    # Store the root (which now contains references to all its children)
+    tree_roots_NB.append(root_vertex)
+    print(f"Tree built: 1 root with {len(root_vertex.children)} children")
+    print(f"  Root: {root_vertex}")
+    for i, child in enumerate(root_vertex.children[:3]):
+        print(f"    Child {i}: {child}")
+    if len(root_vertex.children) > 3:
+        print(f"    ... and {len(root_vertex.children) - 3} more children")
+
+# ==============================================================================
+# STEP 14: Print tree structures for BB hoppings
+# ==============================================================================
+print("\n" + "=" * 80)
+print("BB HOPPING TREE STRUCTURES")
+print("=" * 80)
+
+# Print all BB trees
+for set_idx, root in enumerate(tree_roots):
+    print(f"\n{'─' * 80}")
+    print(f"EQUIVALENCE CLASS {set_idx} (BB: Boron center, Boron neighbors)")
+    print(f"{'─' * 80}")
+    print(f"Total nodes: {1 + len(root.children)} (1 root + {len(root.children)} children)")
+
+    # Get distance for this equivalence class
+    distance = np.linalg.norm(root.hopping.from_atom.cart_coord - root.hopping.to_atom.cart_coord)
+    print(f"Distance to center: {distance:.6f}")
+    print()
+
+    print_tree(root, prefix="", is_last=True, show_details=True)
+
+# ==============================================================================
+# STEP 15: Print tree structures for BN hoppings
+# ==============================================================================
+print("\n\n" + "=" * 80)
+print("BN HOPPING TREE STRUCTURES")
+print("=" * 80)
+
+# Print all BN trees
+for set_idx, root in enumerate(tree_roots_BN):
+    print(f"\n{'─' * 80}")
+    print(f"EQUIVALENCE CLASS {set_idx} (BN: Boron center, Nitrogen neighbors)")
+    print(f"{'─' * 80}")
+    print(f"Total nodes: {1 + len(root.children)} (1 root + {len(root.children)} children)")
+
+    # Get distance for this equivalence class
+    distance = np.linalg.norm(root.hopping.from_atom.cart_coord - root.hopping.to_atom.cart_coord)
+    print(f"Distance to center: {distance:.6f}")
+    print()
+
+    print_tree(root, prefix="", is_last=True, show_details=True)
+
+# ==============================================================================
+# STEP 16: Print tree structures for NB hoppings
+# ==============================================================================
+print("\n\n" + "=" * 80)
+print("NB HOPPING TREE STRUCTURES")
+print("=" * 80)
+
+# Print all NB trees
+for set_idx, root in enumerate(tree_roots_NB):
+    print(f"\n{'─' * 80}")
+    print(f"EQUIVALENCE CLASS {set_idx} (NB: Nitrogen center, Boron neighbors)")
+    print(f"{'─' * 80}")
+    print(f"Total nodes: {1 + len(root.children)} (1 root + {len(root.children)} children)")
+
+    # Get distance for this equivalence class
+    distance = np.linalg.norm(root.hopping.from_atom.cart_coord - root.hopping.to_atom.cart_coord)
+    print(f"Distance to center: {distance:.6f}")
+    print()
+
+    print_tree(root, prefix="", is_last=True, show_details=True)
+
+# ==============================================================================
+# STEP 17: find hermitian relation between BN and NB
+# ==============================================================================
+def check_hermitian(hopping1, hopping2):
+    to_atom1=hopping1.to_atom
+    from_atom1=hopping1.from_atom
+
+    to_atom2c,from_atom2c=hopping2.conjugate()
+    # Get lattice basis vectors
+    a0, a1, a2 = lattice_basis
+    # Iterate through all space group operations
+    for op_idx, group_mat in enumerate(space_group_bilbao_cart):
+        R = group_mat[:3, :3]  # Rotation matrix
+        b = group_mat[:3, 3]  # Translation vector
+        # Transform to_atom1 and from_atom1
+        to_atom1_transformed_cart_coord = R @ to_atom1.cart_coord + b
+        from_atom1_transformed_cart_coord = R @ from_atom1.cart_coord + b
+        # Check if there exist integers n0, n1, n2 such that:
+        # to_atom1_transformed_cart_coord + n0*a0 + n1*a1 + n2*a2 = to_atom2c.cart_coord
+        # from_atom1_transformed_cart_coord + n0*a0 + n1*a1 + n2*a2 = from_atom2c.cart_coord
+        # Compute the difference vectors
+        diff_to = to_atom2c.cart_coord - to_atom1_transformed_cart_coord
+        diff_from = from_atom2c.cart_coord - from_atom1_transformed_cart_coord
+        # Check if diff_to and diff_from are the same lattice vector
+        if np.linalg.norm(diff_to - diff_from) < 1e-6:
+            # They differ by the same lattice vector, now check if it's an integer combination
+            # Solve: n0*a0 + n1*a1 + n2*a2 = diff_to
+            # This is: [a0 a1 a2] @ [n0, n1, n2]^T = diff_to
+            lattice_matrix = np.column_stack([a0, a1, a2])
+            try:
+                # Solve for [n0, n1, n2]
+                n_vector = np.linalg.solve(lattice_matrix, diff_to)
+                # Check if n_vector contains integers (within tolerance)
+                n_rounded = np.round(n_vector)
+                if np.allclose(n_vector, n_rounded, atol=1e-6):
+                    # Found a valid Hermitian conjugate relationship
+                    return True, op_idx
+            except np.linalg.LinAlgError:
+                # Singular matrix, skip this operation
+                continue
+    return False, None
+
+
+print("\n" + "=" * 80)
+print("GROUPING BN AND NB ROOTS BY HERMITIAN CONJUGATE RELATIONS")
+print("=" * 80)
+# Track which roots have been matched
+nb_matched = set()
+bn_matched = set()
+
+# List to store grouped roots
+hermitian_groups = []
+independent_groups=[]
+
+# For each NB root, try to find its Hermitian conjugate in BN roots
+for nb_idx, nb_root in enumerate(tree_roots_NB):
+    if nb_idx in nb_matched:
+        continue
+    found_match = False
+    for bn_idx, bn_root in enumerate(tree_roots_BN):
+        if bn_idx in bn_matched:
+            continue
+        exists, op_idx = check_hermitian(bn_root.hopping,nb_root.hopping)
+        if exists:
+            # Found a matching pair - bn_root first, nb_root second
+            hermitian_groups.append([bn_root, nb_root,op_idx])
+            nb_matched.add(nb_idx)
+            bn_matched.add(bn_idx)
+            print(f"Group {len(hermitian_groups) - 1}: BN root {bn_idx} to NB root {nb_idx} (op: {op_idx})")
+
+            found_match = True
+            break
+    if not found_match:
+        # No match found, put NB root alone
+        independent_groups.append([nb_root])
+        nb_matched.add(nb_idx)
+
+# Process hermitian groups - add root2 as child of root1
+for bn_root, nb_root, op_idx in hermitian_groups:
+    # Add nb_root as child of bn_root
+    bn_root.children.append(nb_root)
+
+    # Update nb_root properties
+    nb_root.type = "hermitian"
+    nb_root.is_root = False
+    nb_root.parent = bn_root
+    nb_root.hopping.operation_idx = op_idx
+
+    # Update the root's hopping operation_idx if not already set
+    if bn_root.hopping.operation_idx is None:
+        # Find the operation that maps bn_root to itself (identity-like operation)
+        # This should already be set from the symmetry tree building, but just in case
+        pass
+
+print(f"\nProcessed {len(hermitian_groups)} hermitian pairs")
+print(f"Added {len(hermitian_groups)} NB roots as hermitian children of BN roots")
+
+# Print verification
+print("\n" + "─" * 80)
+print("VERIFICATION OF HERMITIAN RELATIONSHIPS")
+print("─" * 80)
+for idx, (bn_root, nb_root, op_idx) in enumerate(hermitian_groups):
+    print(f"\nHermitian pair {idx}:")
+    print(f"  BN root (parent): operation {bn_root.hopping.operation_idx}, {len(bn_root.children)} children")
+    print(
+        f"  NB root (child): operation {nb_root.hopping.operation_idx}, is_root={nb_root.is_root}, type={nb_root.type}")
+    print(f"  Hermitian operation: {op_idx}")
+
+
+# ==============================================================================
+# STEP 18: Partition NN_atoms into equivalent sets under symmetry
+# ==============================================================================
+ind1=1
+atm1=atom_types[ind1]
+# print(f"ind1={ind1}, atm1={atm1}")
+center_frac1=(fractional_positions[ind1])[:2]
+center_cell=[0,0]
+lattice_basis=np.array(parsed_config['lattice_basis'])
+l=1.05*np.sqrt(3)
+
+neigboring_NN=compute_dist(center_frac1,center_cell,center_frac1,lattice_basis,7,l)
+neigboring_NN_cartesian=[]
+for item in neigboring_NN:
+    cell, frac_coord = item
+    cart_coord = frac_to_cartesian(cell, frac_coord, lattice_basis)
+    neigboring_NN_cartesian.append([cell, cart_coord])
+
+# for item in neigboring_BN_cartesian:
+#     cell, cart_coord=item
+#     print(f"cell={cell}, cart_coord={cart_coord}")
+# ==============================================================================
+# STEP 19: Partition all NN_atoms into equivalent sets
+# ==============================================================================
+NN_atoms = []
+for item in neigboring_NN:
+    cell, frac_coord = item
+    atm = atomIndex(cell, frac_coord, "N", lattice_basis)  # N atoms
+    NN_atoms.append(atm)
+
+equivalent_atom_sets_NN = []
+equivalent_hopping_sets_NN = []
+set_counter = 0
+while len(NN_atoms) > 0:
+    set_counter += 1
+    print(f"\n--- Equivalent Set {set_counter} ---")
+    # Take the first atom from remaining NN_atoms as seed
+    seed_atom = NN_atoms[0]
+    print(f"Seed atom: {seed_atom}")
+    # Calculate seed atom's distance to center (N atom)
+    seed_distance = np.linalg.norm(seed_atom.cart_coord - N_center_atom.cart_coord)
+    print(f"Seed distance to center: {seed_distance:.6f}")
+    equivalent_dict = {}
+    current_hopping_set = []
+    # First, assign seed atom to identity operation
+    equivalent_dict[0] = (identity_idx, seed_atom)
+    # Get identity matrix components
+    identity_matrix = space_group_bilbao_cart[identity_idx]
+    identity_rotation = identity_matrix[:3, :3]
+    identity_translation = identity_matrix[:3, 3]
+    # Create hopping for seed atom with identity operation
+    seed_hop = hopping(
+        to_atom=N_center_atom,
+        from_atom=seed_atom,
+        class_id=set_counter - 1,
+        operation_idx=identity_idx,
+        rotation_matrix=identity_rotation,
+        translation_vector=identity_translation
+    )
+    current_hopping_set.append(seed_hop)
+    # Apply all space group operations to the seed atom
+    for op_idx, group_mat in enumerate(space_group_bilbao_cart):
+        # Skip identity operation (already handled for seed)
+        if op_idx == identity_idx:
+            continue
+        # Check if this operation leaves the center atom (N) invariant
+        center_transformed = get_next(N_center_atom, N_center_atom, group_mat)
+        diff_center = center_transformed - N_center_atom.cart_coord
+        if np.linalg.norm(diff_center) > 1e-6:
+            # Skip this operation if it moves the center atom
+            continue
+        # Get the transformed coordinate from seed atom
+        next_coord = get_next(N_center_atom, seed_atom, group_mat)
+        # Calculate distance of transformed coordinate to center
+        next_distance = np.linalg.norm(next_coord - N_center_atom.cart_coord)
+        # Check if distance is equal to seed distance (within tolerance)
+        if abs(next_distance - seed_distance) > 1e-6:
+            # Skip this transformed atom if distance doesn't match
+            continue
+        # Check if this coordinate matches any atom in NN_atoms
+        for idx, atm in enumerate(NN_atoms):
+            if idx not in equivalent_dict:  # Skip already found atoms
+                diff = next_coord - atm.cart_coord
+                if np.linalg.norm(diff) < 1e-6:
+                    # Record this atom and which operation generated it
+                    equivalent_dict[idx] = (op_idx, atm)
+                    # Extract rotation and translation from group matrix
+                    rotation = group_mat[:3, :3]
+                    translation = group_mat[:3, 3]
+                    # Create hopping: from equivalent atom to center
+                    hop = hopping(
+                        to_atom=N_center_atom,
+                        from_atom=atm,
+                        class_id=set_counter - 1,
+                        operation_idx=op_idx,
+                        rotation_matrix=rotation,
+                        translation_vector=translation
+                    )
+                    current_hopping_set.append(hop)
+                    print(f"  Operation {op_idx} generates atom {idx}, distance={next_distance:.6f}")
+
+    # Get list of equivalent atom indices
+    equivalent_indices = sorted(equivalent_dict.keys())
+    print(f"Found {len(equivalent_indices)} equivalent atoms: indices {equivalent_indices}")
+    # Collect the actual atoms for this equivalent set
+    current_atom_set = [NN_atoms[idx] for idx in equivalent_indices]
+    equivalent_atom_sets_NN.append(current_atom_set)
+    equivalent_hopping_sets_NN.append(current_hopping_set)
+    # Print details of atoms in this set
+    print("Atoms in this set:")
+    for idx in equivalent_indices:
+        atm = NN_atoms[idx]
+        op_idx, _ = equivalent_dict[idx]
+        dist = np.linalg.norm(atm.cart_coord - N_center_atom.cart_coord)
+        op_str = f"op {op_idx}" + (" (identity)" if op_idx == identity_idx else "")
+        print(f"  Atom {idx} ({op_str}): Cell=[{atm.n0:2d},{atm.n1:2d},{atm.n2:2d}], "
+              f"Frac=[{atm.frac_coord[0]:.4f},{atm.frac_coord[1]:.4f},{atm.frac_coord[2]:.4f}], "
+              f"Dist={dist:.6f}")
+    # Remove equivalent atoms from NN_atoms
+    NN_atoms = [atm for i, atm in enumerate(NN_atoms) if i not in equivalent_indices]
+    print(f"Remaining NN_atoms: {len(NN_atoms)}")
+
+print("\n" + "=" * 60)
+print("NN PARTITIONING COMPLETE")
+print("=" * 60)
+print(f"Total number of NN equivalent sets: {len(equivalent_atom_sets_NN)}")
+
+
+
+# ==============================================================================
+# STEP 20: Build trees for NN hoppings
+# ==============================================================================
+print("\n" + "=" * 60)
+print("BUILDING TREES FOR NN HOPPINGS")
+print("=" * 60)
+# Store all NN trees (root vertices)
+tree_roots_NN = []
+
+for set_idx, hopping_set in enumerate(equivalent_hopping_sets_NN):
+    print(f"\n--- Building tree for NN Set {set_idx} ---")
+    print(f"Total hoppings in set: {len(hopping_set)}")
+    # Find the root hopping (identity operation)
+    root_hopping = None
+    child_hoppings = []
+
+    for hop in hopping_set:
+        if hop.operation_idx == identity_idx:
+            root_hopping = hop
+        else:
+            child_hoppings.append(hop)
+
+    if root_hopping is None:
+        print(f"WARNING: No identity hopping found in NN set {set_idx}!")
+        continue
+    print(f"Root hopping: {root_hopping}")
+    print(f"Number of child hoppings: {len(child_hoppings)}")
+    # Create root vertex
+    root_vertex = vertex(hopping=root_hopping, type=None, identity_idx=identity_idx)
+    # Create child vertices and link them to root
+    for hop in child_hoppings:
+        child_type = "linear"
+        child_v = vertex(hopping=hop, type=child_type, identity_idx=identity_idx)
+        # Add this child to the root's children list
+        root_vertex.add_child(child_v)
+    # Store the root (which now contains references to all its children)
+
+    tree_roots_NN.append(root_vertex)
+    print(f"Tree built: 1 root with {len(root_vertex.children)} children")
+    print(f"  Root: {root_vertex}")
+    for i, child in enumerate(root_vertex.children[:3]):
+        print(f"    Child {i}: {child}")
+    if len(root_vertex.children) > 3:
+        print(f"    ... and {len(root_vertex.children) - 3} more children")
+
+# Collect all roots from different groups
+all_roots = []
+
+# Add BB roots
+all_roots.extend(tree_roots)
+print(f"Added {len(tree_roots)} BB roots")
+
+# Add BN roots (which now include NB roots as hermitian children)
+all_roots.extend(tree_roots_BN)
+print(f"Added {len(tree_roots_BN)} BN roots")
+
+# Add NN roots
+all_roots.extend(tree_roots_NN)
+print(f"Added {len(tree_roots_NN)} NN roots")
+
+# Add independent NB and BN roots (leftovers without hermitian pairs)
+all_roots.extend([group[0] for group in independent_groups])
+print(f"Added {len(independent_groups)} independent roots")
+
+print("\n" + "─" * 80)
+print("SUMMARY OF ALL ROOTS")
+print("─" * 80)
+print(f"Total roots: {len(all_roots)}")
+print(f"  BB roots: {len(tree_roots)}")
+print(f"  BN roots (with hermitian children): {len(tree_roots_BN)}")
+print(f"  NN roots: {len(tree_roots_NN)}")
+print(f"  Independent roots: {len(independent_groups)}")
+print("\n" + "=" * 80)
+
+print("\n" + "=" * 80)
+print("ALL SYMMETRY TREES")
+print("=" * 80)
+
+for tree_idx, root in enumerate(all_roots):
+    print(f"\n{'=' * 80}")
+    print(f"TREE {tree_idx}")
+    print(f"{'=' * 80}")
+
+    # Print root information
+    hopping = root.hopping
+    from_cell = [hopping.from_atom.n0, hopping.from_atom.n1, hopping.from_atom.n2]
+    to_cell = [hopping.to_atom.n0, hopping.to_atom.n1, hopping.to_atom.n2]
+
+    print(f"ROOT: {hopping.from_atom.atom_name}[{from_cell[0]},{from_cell[1]},{from_cell[2]}] -> "
+          f"{hopping.to_atom.atom_name}[{to_cell[0]},{to_cell[1]},{to_cell[2]}]")
+    print(f"  Distance: {np.linalg.norm(hopping.from_atom.cart_coord - hopping.to_atom.cart_coord):.6f} Å")
+    print(f"  Operation: {hopping.operation_idx}")
+    print(f"  Type: {root.type}")
+    print(f"  Children: {len(root.children)}")
+    print()
+
+    # Print the tree using the previously defined function
+    print_tree(root)
+
+    # Print statistics for this tree
+    def count_nodes(node):
+        count = 1
+        for child in node.children:
+            count += count_nodes(child)
+        return count
+
+    total_nodes = count_nodes(root)
+    print(f"\nTree statistics:")
+    print(f"  Total nodes: {total_nodes}")
+    print(f"  Root children: {len(root.children)}")
+
+print("\n" + "=" * 80)
+print(f"TOTAL TREES: {len(all_roots)}")
+print("=" * 80)
