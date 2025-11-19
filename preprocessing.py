@@ -6,6 +6,8 @@ import json
 import numpy as np
 from datetime import datetime
 from copy import deepcopy
+from scipy.linalg import block_diag
+import sympy as sp
 # ==============================================================================
 # Main preprocessing pipeline for tight-binding model setup
 # ==============================================================================
@@ -30,7 +32,6 @@ if (len(sys.argv) != 2):
     exit(argErrCode)
 
 confFileName = str(sys.argv[1])
-
 
 # ==============================================================================
 # STEP 2: Parse configuration file
@@ -72,12 +73,12 @@ try:
     # Print lattice basis vectors (primitive cell)
     print("Lattice Basis:")
     for i, vector in enumerate(parsed_config['lattice_basis']):
-        print(f"  Vector {i+1}: [{', '.join(map(str, vector))}]")
+        print(f"  Vector {i + 1}: [{', '.join(map(str, vector))}]")
 
     # Print space group basis vectors
     print("Space Group Basis:")
     for i, vector in enumerate(parsed_config['space_group_basis']):
-        print(f"  Vector {i+1}: [{', '.join(map(str, vector))}]")
+        print(f"  Vector {i + 1}: [{', '.join(map(str, vector))}]")
 
     # Print atom types and their orbital information
     print("\nAtom Types:")
@@ -89,7 +90,7 @@ try:
     # Print atom positions in the unit cell
     print(f"\nAtom Positions (Total: {len(parsed_config['atom_positions'])}):")
     for i, pos in enumerate(parsed_config['atom_positions']):
-        print(f"  Position {i+1}:")
+        print(f"  Position {i + 1}:")
         print(f"    Name: {pos['position_name']}")
         print(f"    Atom Type: {pos['atom_type']}")
         print(f"    fractional_coordinates: [{', '.join(map(str, pos['fractional_coordinates']))}]")
@@ -103,7 +104,6 @@ except json.JSONDecodeError as e:
 
 # Convert parsed_config to JSON string for passing to other subprocesses
 config_json = json.dumps(parsed_config)
-
 
 # ==============================================================================
 # STEP 3: Run sanity checks on parsed configuration
@@ -133,7 +133,6 @@ else:
     print("Sanity check passed!")
     print("Output:")
     print(sanity_result.stdout)
-
 
 # ==============================================================================
 # STEP 4: Generate space group representations
@@ -180,7 +179,8 @@ else:
         print("\nSpace Group Origin:")
         origin_cart = space_group_representations["space_group_origin_cartesian"]
         origin_frac_prim = space_group_representations["space_group_origin_fractional_primitive"]
-        print(f"  Bilbao (fractional in space group basis): [{', '.join(map(str, parsed_config['space_group_origin']))}]")
+        print(
+            f"  Bilbao (fractional in space group basis): [{', '.join(map(str, parsed_config['space_group_origin']))}]")
         print(f"  Cartesian: [{', '.join(f'{x:.6f}' for x in origin_cart)}]")
         print(f"  Fractional (primitive cell basis): [{', '.join(f'{x:.6f}' for x in origin_frac_prim)}]")
 
@@ -223,9 +223,9 @@ else:
 
     except KeyError as e:
         print(f"Missing key in space group representations output: {e}")
-        print("Available keys:", list(space_group_representations.keys()) if 'space_group_representations' in locals() else "Could not parse JSON")
+        print("Available keys:", list(
+            space_group_representations.keys()) if 'space_group_representations' in locals() else "Could not parse JSON")
         exit(1)
-
 
 # ==============================================================================
 # STEP 5: Define orbital mapping for 78-dimensional orbital space
@@ -273,7 +273,6 @@ orbital_map = {
     '7fxyz': 71, '7fz3': 72, '7fxz2': 73, '7fyz2': 74,
     '7fz(x2-y2)': 75, '7fx(x2-3y2)': 76, '7fy(3x2-y2)': 77,
 }
-
 
 # ==============================================================================
 # STEP 6: Complete orbital basis under symmetry operations
@@ -350,7 +349,8 @@ try:
     for atom_name, repr_matrices in representations.items():
         if repr_matrices:
             repr_array = np.array(repr_matrices)
-            print(f"  {atom_name}: {repr_array.shape[0]} operations, {repr_array.shape[1]}×{repr_array.shape[2]} matrices")
+            print(
+                f"  {atom_name}: {repr_array.shape[0]} operations, {repr_array.shape[1]}×{repr_array.shape[2]} matrices")
 
     # Update parsed_config with completed orbitals
     for atom_pos in parsed_config['atom_positions']:
@@ -386,7 +386,8 @@ except json.JSONDecodeError as e:
 
 except KeyError as e:
     print(f"Missing key in orbital completion output: {e}")
-    print("Available keys:", list(orbital_completion_data.keys()) if 'orbital_completion_data' in locals() else "Could not parse JSON")
+    print("Available keys:",
+          list(orbital_completion_data.keys()) if 'orbital_completion_data' in locals() else "Could not parse JSON")
     exit(1)
 
 except Exception as e:
@@ -399,10 +400,7 @@ print("ORBITAL COMPLETION FINISHED")
 print("=" * 60)
 
 
-
-
-
-def compute_dist(center_frac,center_cell, dest_frac, basis,search_range,radius):
+def compute_dist(center_frac, center_cell, dest_frac, basis, search_range, radius):
     """
 
     :param center_frac:
@@ -413,36 +411,36 @@ def compute_dist(center_frac,center_cell, dest_frac, basis,search_range,radius):
     :param radius:
     :return:
     """
-    f0,f1=center_frac
-    n0,n1=center_cell
-    
-    g0,g1=dest_frac
+    f0, f1 = center_frac
+    n0, n1 = center_cell
+
+    g0, g1 = dest_frac
     # m0,m1=dest_cell
-    
-    a0,a1,a2=basis
-    
-    center_coord=np.array(
-        (f0+n0)*a0+(f1+n1)*a1
+
+    a0, a1, a2 = basis
+
+    center_coord = np.array(
+        (f0 + n0) * a0 + (f1 + n1) * a1
     )
-    
-    rst=[]
-    for j0 in range(-search_range,search_range+1):
-        for j1 in range(-search_range,search_range+1):
-            dest_coord=np.array(
-                (g0+j0)*a0+(g1+j1)*a1
+
+    rst = []
+    for j0 in range(-search_range, search_range + 1):
+        for j1 in range(-search_range, search_range + 1):
+            dest_coord = np.array(
+                (g0 + j0) * a0 + (g1 + j1) * a1
             )
-            dist=np.linalg.norm(center_coord-dest_coord,ord=2)
-            if dist<=radius:
-                rst.append([[j0,j1,0],[g0,g1,0]])
+            dist = np.linalg.norm(center_coord - dest_coord, ord=2)
+            if dist <= radius:
+                rst.append([[j0, j1, 0], [g0, g1, 0]])
 
     return rst
 
 
-atom_types=[]
-fractional_positions=[]
+atom_types = []
+fractional_positions = []
 for i, pos in enumerate(parsed_config['atom_positions']):
-    type_name=pos["atom_type"]
-    frac_pos=pos["fractional_coordinates"]
+    type_name = pos["atom_type"]
+    frac_pos = pos["fractional_coordinates"]
     # print(f"type_name={type_name}, frac_pos={frac_pos}")
     atom_types.append(type_name)
     fractional_positions.append(np.array(frac_pos))
@@ -453,54 +451,57 @@ for i, pos in enumerate(parsed_config['atom_positions']):
 print("\n" + "=" * 60)
 print("PARTITIONING BB ATOMS INTO EQUIVALENT SETS")
 print("=" * 60)
-ind0=0
-atm0=atom_types[ind0]
-center_frac0=(fractional_positions[ind0])[:2]
-center_cell=[0,0]
-lattice_basis=np.array(parsed_config['lattice_basis'])
-l=1.05*np.sqrt(3)
+ind0 = 0
+atm0 = atom_types[ind0]
+center_frac0 = (fractional_positions[ind0])[:2]
+center_cell = [0, 0]
+lattice_basis = np.array(parsed_config['lattice_basis'])
+l = 1.05 * np.sqrt(3)
 
-neigboring_BB=compute_dist(center_frac0,center_cell,center_frac0,lattice_basis,7,l)
+neigboring_BB = compute_dist(center_frac0, center_cell, center_frac0, lattice_basis, 7, l)
 print(neigboring_BB)
-def frac_to_cartesian(cell,frac_coord,basis):
-    n0,n1,n2=cell
-    f0,f1,f2=frac_coord
-    a0,a1,a2=basis
-    return (n0+f0)*a0+(n1+f1)*a1+(n2+f2)*a2
 
-neigboring_BB_cartesian=[]
+
+def frac_to_cartesian(cell, frac_coord, basis):
+    n0, n1, n2 = cell
+    f0, f1, f2 = frac_coord
+    a0, a1, a2 = basis
+    return (n0 + f0) * a0 + (n1 + f1) * a1 + (n2 + f2) * a2
+
+
+neigboring_BB_cartesian = []
 for item in neigboring_BB:
-    cell,frac_coord=item
-    cart_coord=frac_to_cartesian(cell,frac_coord,lattice_basis)
-    neigboring_BB_cartesian.append([cell,cart_coord])
+    cell, frac_coord = item
+    cart_coord = frac_to_cartesian(cell, frac_coord, lattice_basis)
+    neigboring_BB_cartesian.append([cell, cart_coord])
 
 for item in neigboring_BB_cartesian:
-    cell, cart_coord=item
+    cell, cart_coord = item
     print(f"cell={cell}, cart_coord={cart_coord}")
 
+eps = 1e-8
 
-eps=1e-8
-
-space_group_bilbao_cart=[]
+space_group_bilbao_cart = []
 for item in space_group_representations["space_group_matrices_cartesian"]:
     space_group_bilbao_cart.append(np.array(item))
 
-for i,mat in enumerate(space_group_bilbao_cart):
+for i, mat in enumerate(space_group_bilbao_cart):
     print(f"===========matrix {i}: ")
     print(f"{mat}")
 
+
 class atomIndex():
-    def __init__(self,cell,frac_coord,atom_name,basis):
-        self.n0=cell[0]
-        self.n1=cell[1]
-        self.n2=cell[2]
-        self.atom_name=atom_name
-        self.frac_coord=frac_coord
-        self.basis=basis
-        a0,a1,a2=basis
-        f0,f1,f2=frac_coord
-        cart_coord=(self.n0+f0)*a0+(self.n1+f1)*a1+(self.n2+f2)*a2
-        self.cart_coord=cart_coord
+    def __init__(self, cell, frac_coord, atom_name, basis):
+        self.n0 = cell[0]
+        self.n1 = cell[1]
+        self.n2 = cell[2]
+        self.atom_name = atom_name
+        self.frac_coord = frac_coord
+        self.basis = basis
+        a0, a1, a2 = basis
+        f0, f1, f2 = frac_coord
+        cart_coord = (self.n0 + f0) * a0 + (self.n1 + f1) * a1 + (self.n2 + f2) * a2
+        self.cart_coord = cart_coord
 
     def __str__(self):
         """String representation for print()"""
@@ -515,33 +516,33 @@ class atomIndex():
                 f"frac_coord={self.frac_coord}, "
                 f"atom_name='{self.atom_name}')")
 
+
 #############center=B, neighbor=B
-BB_atoms=[]
+BB_atoms = []
 for item in neigboring_BB:
-    cell,frac_coord=item
-    atm=atomIndex(cell,frac_coord,"B",lattice_basis)
+    cell, frac_coord = item
+    atm = atomIndex(cell, frac_coord, "B", lattice_basis)
     BB_atoms.append(atm)
-B_center_frac=list(center_frac0)+[0]
+B_center_frac = list(center_frac0) + [0]
 
-B_center_atom=atomIndex([0,0,0],B_center_frac,atm0,lattice_basis)
+B_center_atom = atomIndex([0, 0, 0], B_center_frac, atm0, lattice_basis)
 
-def get_next(center_atom,nghb_atom,group_mat):
-    R=group_mat[:,:3]
-    b=group_mat[:,3]
+
+def get_next(center_atom, nghb_atom, group_mat):
+    R = group_mat[:, :3]
+    b = group_mat[:, 3]
     # print(R)
     # print(b)
-    center_cart_coord=center_atom.cart_coord
-    nghb_cart_coord=nghb_atom.cart_coord
-    diff_vec=nghb_cart_coord-center_cart_coord
-    next_cart_coord=center_cart_coord+R@diff_vec+b
+    center_cart_coord = center_atom.cart_coord
+    nghb_cart_coord = nghb_atom.cart_coord
+    diff_vec = nghb_cart_coord - center_cart_coord
+    next_cart_coord = center_cart_coord + R @ diff_vec + b
     return next_cart_coord
 
 
 # ==============================================================================
 # STEP 8: Partition all BB_atoms into equivalent sets
 # ==============================================================================
-
-
 
 
 class hopping():
@@ -700,8 +701,7 @@ print("=" * 60)
 print(f"Total number of equivalent sets: {len(equivalent_atom_sets_BB)}")
 print(f"Total number of hopping sets: {len(equivalent_hopping_sets_BB)}")
 
-
-for j,st in enumerate(equivalent_hopping_sets_BB):
+for j, st in enumerate(equivalent_hopping_sets_BB):
     print(f"set {j} ********************************************************")
     for hp in st:
         print(hp)
@@ -728,7 +728,6 @@ class vertex():
                 f"op={self.hopping.operation_idx}, "
                 f"parent={parent_str}, "
                 f"children={len(self.children)})")
-
 
 
 # Store all trees (now just storing the root vertices)
@@ -766,26 +765,23 @@ for set_idx, hopping_set in enumerate(equivalent_hopping_sets_BB):
     if len(root_vertex.children) > 3:
         print(f"    ... and {len(root_vertex.children) - 3} more children")
 
-
-
 # ==============================================================================
 # STEP 9: Partition BN_atoms into equivalent sets under symmetry
 # ==============================================================================
-ind1=1
-atm1=atom_types[ind1]
+ind1 = 1
+atm1 = atom_types[ind1]
 # print(f"ind1={ind1}, atm1={atm1}")
-center_frac1=(fractional_positions[ind1])[:2]
-center_cell=[0,0]
-lattice_basis=np.array(parsed_config['lattice_basis'])
-l=1.05*np.sqrt(3)
+center_frac1 = (fractional_positions[ind1])[:2]
+center_cell = [0, 0]
+lattice_basis = np.array(parsed_config['lattice_basis'])
+l = 1.05 * np.sqrt(3)
 
-neigboring_BN=compute_dist(center_frac0,center_cell,center_frac1,lattice_basis,7,l)
-neigboring_BN_cartesian=[]
+neigboring_BN = compute_dist(center_frac0, center_cell, center_frac1, lattice_basis, 7, l)
+neigboring_BN_cartesian = []
 for item in neigboring_BN:
-    cell,frac_coord=item
+    cell, frac_coord = item
     cart_coord = frac_to_cartesian(cell, frac_coord, lattice_basis)
-    neigboring_BN_cartesian.append([cell,cart_coord])
-
+    neigboring_BN_cartesian.append([cell, cart_coord])
 
 # for item in neigboring_BN_cartesian:
 #     cell, cart_coord=item
@@ -891,7 +887,6 @@ print(f"Total number of BN equivalent sets: {len(equivalent_atom_sets_BN)}")
 #         print(item)
 
 
-
 # ==============================================================================
 # STEP 11: Build trees for BN hoppings
 # ==============================================================================
@@ -937,8 +932,6 @@ for set_idx, hopping_set in enumerate(equivalent_hopping_sets_BN):
         print(f"    ... and {len(root_vertex.children) - 3} more children")
 
 
-
-
 def print_tree(root, prefix="", is_last=True, show_details=True):
     """
     Print a tree structure in a visual format
@@ -971,7 +964,7 @@ def print_tree(root, prefix="", is_last=True, show_details=True):
 
     if show_details:
         node_desc = (f"{node_label} | Op={hop.operation_idx:2d} | "
-                     f"{from_atom_name}→{to_atom_name} | "
+                     f"{to_atom_name}←{from_atom_name} | "
                      f"Cell=[{from_cell[0]:2d},{from_cell[1]:2d},{from_cell[2]:2d}] | "
                      f"Dist={distance:.4f}")
     else:
@@ -1256,14 +1249,15 @@ for set_idx, root in enumerate(tree_roots_NB):
 
     print_tree(root, prefix="", is_last=True, show_details=True)
 
+
 # ==============================================================================
 # STEP 17: find hermitian relation between BN and NB
 # ==============================================================================
 def check_hermitian(hopping1, hopping2):
-    to_atom1=hopping1.to_atom
-    from_atom1=hopping1.from_atom
+    to_atom1 = hopping1.to_atom
+    from_atom1 = hopping1.from_atom
 
-    to_atom2c,from_atom2c=hopping2.conjugate()
+    to_atom2c, from_atom2c = hopping2.conjugate()
     # Get lattice basis vectors
     a0, a1, a2 = lattice_basis
     # Iterate through all space group operations
@@ -1308,7 +1302,7 @@ bn_matched = set()
 
 # List to store grouped roots
 hermitian_groups = []
-independent_groups=[]
+independent_groups = []
 
 # For each NB root, try to find its Hermitian conjugate in BN roots
 for nb_idx, nb_root in enumerate(tree_roots_NB):
@@ -1318,10 +1312,10 @@ for nb_idx, nb_root in enumerate(tree_roots_NB):
     for bn_idx, bn_root in enumerate(tree_roots_BN):
         if bn_idx in bn_matched:
             continue
-        exists, op_idx = check_hermitian(bn_root.hopping,nb_root.hopping)
+        exists, op_idx = check_hermitian(bn_root.hopping, nb_root.hopping)
         if exists:
             # Found a matching pair - bn_root first, nb_root second
-            hermitian_groups.append([bn_root, nb_root,op_idx])
+            hermitian_groups.append([bn_root, nb_root, op_idx])
             nb_matched.add(nb_idx)
             bn_matched.add(bn_idx)
             print(f"Group {len(hermitian_groups) - 1}: BN root {bn_idx} to NB root {nb_idx} (op: {op_idx})")
@@ -1364,20 +1358,19 @@ for idx, (bn_root, nb_root, op_idx) in enumerate(hermitian_groups):
         f"  NB root (child): operation {nb_root.hopping.operation_idx}, is_root={nb_root.is_root}, type={nb_root.type}")
     print(f"  Hermitian operation: {op_idx}")
 
-
 # ==============================================================================
 # STEP 18: Partition NN_atoms into equivalent sets under symmetry
 # ==============================================================================
-ind1=1
-atm1=atom_types[ind1]
+ind1 = 1
+atm1 = atom_types[ind1]
 # print(f"ind1={ind1}, atm1={atm1}")
-center_frac1=(fractional_positions[ind1])[:2]
-center_cell=[0,0]
-lattice_basis=np.array(parsed_config['lattice_basis'])
-l=1.05*np.sqrt(3)
+center_frac1 = (fractional_positions[ind1])[:2]
+center_cell = [0, 0]
+lattice_basis = np.array(parsed_config['lattice_basis'])
+l = 1.05 * np.sqrt(3)
 
-neigboring_NN=compute_dist(center_frac1,center_cell,center_frac1,lattice_basis,7,l)
-neigboring_NN_cartesian=[]
+neigboring_NN = compute_dist(center_frac1, center_cell, center_frac1, lattice_basis, 7, l)
+neigboring_NN_cartesian = []
 for item in neigboring_NN:
     cell, frac_coord = item
     cart_coord = frac_to_cartesian(cell, frac_coord, lattice_basis)
@@ -1492,8 +1485,6 @@ print("NN PARTITIONING COMPLETE")
 print("=" * 60)
 print(f"Total number of NN equivalent sets: {len(equivalent_atom_sets_NN)}")
 
-
-
 # ==============================================================================
 # STEP 20: Build trees for NN hoppings
 # ==============================================================================
@@ -1558,10 +1549,18 @@ print(f"Added {len(tree_roots_NN)} NN roots")
 all_roots.extend([group[0] for group in independent_groups])
 print(f"Added {len(independent_groups)} independent roots")
 
+# Sort all_roots by hopping distance
+def get_hopping_distance(root):
+    """Calculate the distance for a root's hopping"""
+    hopping = root.hopping
+    return np.linalg.norm(hopping.from_atom.cart_coord - hopping.to_atom.cart_coord)
+
+all_roots_sorted = sorted(all_roots, key=get_hopping_distance)
+
 print("\n" + "─" * 80)
-print("SUMMARY OF ALL ROOTS")
+print("SUMMARY OF ALL ROOTS (SORTED BY DISTANCE)")
 print("─" * 80)
-print(f"Total roots: {len(all_roots)}")
+print(f"Total roots: {len(all_roots_sorted)}")
 print(f"  BB roots: {len(tree_roots)}")
 print(f"  BN roots (with hermitian children): {len(tree_roots_BN)}")
 print(f"  NN roots: {len(tree_roots_NN)}")
@@ -1569,10 +1568,10 @@ print(f"  Independent roots: {len(independent_groups)}")
 print("\n" + "=" * 80)
 
 print("\n" + "=" * 80)
-print("ALL SYMMETRY TREES")
+print("ALL SYMMETRY TREES (SORTED BY DISTANCE)")
 print("=" * 80)
 
-for tree_idx, root in enumerate(all_roots):
+for tree_idx, root in enumerate(all_roots_sorted):
     print(f"\n{'=' * 80}")
     print(f"TREE {tree_idx}")
     print(f"{'=' * 80}")
@@ -1582,9 +1581,11 @@ for tree_idx, root in enumerate(all_roots):
     from_cell = [hopping.from_atom.n0, hopping.from_atom.n1, hopping.from_atom.n2]
     to_cell = [hopping.to_atom.n0, hopping.to_atom.n1, hopping.to_atom.n2]
 
-    print(f"ROOT: {hopping.from_atom.atom_name}[{from_cell[0]},{from_cell[1]},{from_cell[2]}] -> "
-          f"{hopping.to_atom.atom_name}[{to_cell[0]},{to_cell[1]},{to_cell[2]}]")
-    print(f"  Distance: {np.linalg.norm(hopping.from_atom.cart_coord - hopping.to_atom.cart_coord):.6f} Å")
+    distance = get_hopping_distance(root)
+
+    print(f"ROOT: {hopping.to_atom.atom_name}[{to_cell[0]},{to_cell[1]},{to_cell[2]}] <- "
+          f"{hopping.from_atom.atom_name}[{from_cell[0]},{from_cell[1]},{from_cell[2]}]")
+    print(f"  Distance: {distance:.6f} Å")
     print(f"  Operation: {hopping.operation_idx}")
     print(f"  Type: {root.type}")
     print(f"  Children: {len(root.children)}")
@@ -1593,6 +1594,7 @@ for tree_idx, root in enumerate(all_roots):
     # Print the tree using the previously defined function
     print_tree(root)
 
+
     # Print statistics for this tree
     def count_nodes(node):
         count = 1
@@ -1600,11 +1602,281 @@ for tree_idx, root in enumerate(all_roots):
             count += count_nodes(child)
         return count
 
+
     total_nodes = count_nodes(root)
     print(f"\nTree statistics:")
     print(f"  Total nodes: {total_nodes}")
     print(f"  Root children: {len(root.children)}")
 
 print("\n" + "=" * 80)
-print(f"TOTAL TREES: {len(all_roots)}")
+print(f"TOTAL TREES: {len(all_roots_sorted)}")
 print("=" * 80)
+
+def stabilizer(atom):
+    stabilizer_op_id_list=[]
+    atom_cart_coord=atom.cart_coord
+    # Iterate through all space group operations
+    for op_idx, group_mat in enumerate(space_group_bilbao_cart):
+        R = group_mat[:3, :3]  # Rotation matrix
+        b = group_mat[:3, 3]  # Translation vector
+        atom_cart_transformed=R@atom_cart_coord+b
+        if np.linalg.norm(atom_cart_coord-atom_cart_transformed,ord=2)<1e-6:
+            stabilizer_op_id_list.append(op_idx)
+    return set(stabilizer_op_id_list)
+
+
+def find_root_stabilizer(root):
+    to_atom=root.hopping.to_atom
+    from_atom=root.hopping.from_atom
+
+    to_atom_stabilizer=stabilizer(to_atom)
+    from_atom_stabilizer=stabilizer(from_atom)
+
+    root_stabilizer = to_atom_stabilizer.intersection(from_atom_stabilizer)
+
+    return root_stabilizer
+
+def orbital_to_submatrix(orbitals, Vs,Vp,Vd,Vf):
+    full_orbitals = [
+        's',
+        'px', 'py', 'pz',
+        'dxy', 'dyz', 'dzx', 'd(x²-y²)', 'd(3z²-r²)',
+        'fz³', 'fxz²', 'fyz²', 'fxyz', 'fz(x²-y²)', 'fx(x²-3y²)', 'fy(3x²-y²)'
+    ]
+    # Remove leading numbers from orbitals (e.g., '2s' -> 's', '2pz' -> 'pz')
+    orbital_types = []
+    for orb in orbitals:
+        # Remove all leading digits
+        orbital_type = orb.lstrip('0123456789')
+        orbital_types.append(orbital_type)
+
+    # Sort orbitals by their position in full_orbitals
+    sorted_orbital_types = sorted(orbital_types, key=lambda orb: full_orbitals.index(orb))
+    # Get the indices in full_orbitals
+    orbital_indices = [full_orbitals.index(orb) for orb in sorted_orbital_types]
+
+
+    print(f"orbitals={orbitals}")
+    print(f"sorted_orbital_types={sorted_orbital_types}")
+    print(f"orbital_indices={orbital_indices}")
+    hopping_matrix_full = block_diag(Vs, Vp, Vd, Vf)
+    # Extract submatrix for the specific orbitals
+    # Use np.ix_ to select rows and columns corresponding to orbital_indices
+    V_submatrix = hopping_matrix_full[np.ix_(orbital_indices, orbital_indices)]
+
+    return V_submatrix
+
+
+
+# op_id=6
+# Vs=repr_s_np[op_id]
+# Vp=repr_p_np[op_id]
+# Vd=repr_d_np[op_id]
+# Vf=repr_f_np[op_id]
+# V_submatrix=orbital_to_submatrix(parsed_config['atom_types']["N"]['orbitals'],Vs,Vp,Vd,Vf)
+# print(V_submatrix)
+# print(Vp)
+
+# print(parsed_config['atom_types']["B"]['orbitals'])
+# print(parsed_config['atom_types']["N"]['orbitals'])
+
+def create_hopping_matrix(root, parsed_config, tree_idx):
+    """
+       Create a symbolic hopping matrix for a root's hopping
+
+       Args:
+           root: vertex object containing the hopping
+           parsed_config: configuration with orbital information
+           tree_idx: tree number/index
+
+       Returns:
+           sympy.Matrix: Hopping matrix with symbolic elements T^{tree_idx}_{i,j}
+       """
+    hopping = root.hopping
+    # Get atom types
+    to_atom_type = hopping.to_atom.atom_name
+    from_atom_type = hopping.from_atom.atom_name
+
+    # Get orbitals for each atom
+    to_orbitals = parsed_config['atom_types'][to_atom_type]['orbitals']
+    from_orbitals = parsed_config['atom_types'][from_atom_type]['orbitals']
+
+    # Get dimensions
+    n_to = len(to_orbitals)
+    n_from = len(from_orbitals)
+    # Create symbolic matrix
+    T = sp.zeros(n_to, n_from)
+    # Fill with symbolic elements T^{tree_idx}_{to_orbital, from_orbital}
+    for i, to_orb in enumerate(to_orbitals):
+        for j, from_orb in enumerate(from_orbitals):
+            # Create symbol name: T^{0}_{2s,2px}
+            symbol_name = f"T^{{{tree_idx}}}_{{{to_orb},{from_orb}}}"
+            T[i, j] = sp.Symbol(symbol_name)
+
+    return T
+
+
+# print("constraint: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+#
+# tree_idx = 6
+# root = all_roots_sorted[tree_idx]
+#
+# T = create_hopping_matrix(root, parsed_config, tree_idx)
+#
+# root_stabilizer =list( find_root_stabilizer(root))
+#
+# print_tree(root)
+# print(f"Root stabilizer: {root_stabilizer}")
+# sp.pprint(T)
+#
+# stab_id=1
+# op_id=root_stabilizer[stab_id]
+#
+# Vs=repr_s_np[op_id]
+# Vp=repr_p_np[op_id]
+# Vd=repr_d_np[op_id]
+# Vf=repr_f_np[op_id]
+# root_to_atom=root.hopping.to_atom
+# root_from_atom=root.hopping.from_atom
+# print(root_to_atom)
+# print(root_from_atom)
+# V_submatrix_to_atom=orbital_to_submatrix(parsed_config['atom_types'][root_to_atom.atom_name]['orbitals'],Vs,Vp,Vd,Vf)
+# V_submatrix_from_atom=orbital_to_submatrix(parsed_config['atom_types'][root_from_atom.atom_name]['orbitals'],Vs,Vp,Vd,Vf)
+# print(f"V_submatrix_to_atom={V_submatrix_to_atom}")
+# print(f"V_submatrix_from_atom={V_submatrix_from_atom}")
+# transformed_T=V_submatrix_to_atom*T*V_submatrix_from_atom.conjugate().transpose()
+#
+# diff_T=T-transformed_T
+def get_stabilizer_constraints(root, parsed_config, tree_idx):
+    """
+        Get all constraint equations from stabilizer operations for a root's hopping matrix.
+
+        Args:
+            root: vertex object containing the hopping
+            parsed_config: configuration with orbital information
+            tree_idx: tree number/index
+
+        Returns:
+            dict: Contains 'T', 'constraints', 'equations'
+        """
+    # Create hopping matrix
+    T = create_hopping_matrix(root, parsed_config, tree_idx)
+    # Get stabilizer operations
+    root_stabilizer = list(find_root_stabilizer(root))
+    # Get atom information
+    root_to_atom = root.hopping.to_atom
+    root_from_atom = root.hopping.from_atom
+    # Store all constraints
+    all_constraints = []
+    all_equations = []
+    for stab_id, op_id in enumerate(root_stabilizer):
+        # Get representation matrices
+        Vs = repr_s_np[op_id]
+        Vp = repr_p_np[op_id]
+        Vd = repr_d_np[op_id]
+        Vf = repr_f_np[op_id]
+        # Get submatrices for the specific orbitals
+        V_submatrix_to_atom = orbital_to_submatrix(
+            parsed_config['atom_types'][root_to_atom.atom_name]['orbitals'],
+            Vs, Vp, Vd, Vf
+        )
+        V_submatrix_from_atom = orbital_to_submatrix(
+            parsed_config['atom_types'][root_from_atom.atom_name]['orbitals'],
+            Vs, Vp, Vd, Vf
+        )
+        # Convert numpy matrices to sympy
+        V_to = sp.Matrix(V_submatrix_to_atom)
+        V_from = sp.Matrix(V_submatrix_from_atom)
+        # Compute transformed T: V_to * T * V_from^†
+        transformed_T = V_to * T * V_from.H
+        # Compute difference
+        diff_T = T - transformed_T
+        diff_T_simplified = sp.simplify(diff_T)
+        # Extract non-zero equations
+        equations = []
+        for i in range(diff_T.shape[0]):
+            for j in range(diff_T.shape[1]):
+                if diff_T_simplified[i, j] != 0:
+                    equations.append({
+                        'element': (i, j),
+                        'equation': diff_T_simplified[i, j]
+                    })
+        all_constraints.append({
+            'op_id': op_id,
+            'stab_id': stab_id,
+            'V_to': V_submatrix_to_atom,
+            'V_from': V_submatrix_from_atom,
+            'diff_T': diff_T_simplified,
+            'equations': equations
+        })
+        all_equations.extend(equations)
+
+    return {
+        'T': T,
+        'root_stabilizer': root_stabilizer,
+        'constraints': all_constraints,
+        'all_equations': all_equations
+    }
+
+
+# Usage example:
+tree_idx = 5
+root = all_roots_sorted[tree_idx]
+
+result = get_stabilizer_constraints(root, parsed_config, tree_idx)
+
+print("=" * 80)
+print(f"TREE {tree_idx} CONSTRAINTS")
+print("=" * 80)
+print_tree(root)
+print(f"\nRoot stabilizer: {result['root_stabilizer']}")
+print(f"Number of stabilizer operations: {len(result['root_stabilizer'])}")
+
+print("\nHopping matrix T:")
+sp.pprint(result['T'])
+
+print("\n" + "=" * 80)
+print("CONSTRAINTS FROM EACH STABILIZER OPERATION")
+print("=" * 80)
+
+for constraint in result['constraints']:
+    print(f"\nOperation {constraint['op_id']} (stabilizer index {constraint['stab_id']}):")
+    print(f"V_to:\n{constraint['V_to']}")
+    print(f"V_from:\n{constraint['V_from']}")
+
+    if len(constraint['equations']) == 0:
+        print("✓ No constraints (T is invariant)")
+    else:
+        print(f"Constraint equations ({len(constraint['equations'])} total):")
+        for eq in constraint['equations']:
+            print(f"  T[{eq['element'][0]},{eq['element'][1]}]: {eq['equation']} = 0")
+
+    print("\nDifference matrix (T - V_to*T*V_from^†):")
+    sp.pprint(constraint['diff_T'])
+
+print("\n" + "=" * 80)
+print("ALL UNIQUE CONSTRAINT EQUATIONS")
+print("=" * 80)
+print(f"Total equations: {len(result['all_equations'])}")
+for eq in result['all_equations']:
+    sp.pprint(eq)
+
+# Get unique equations (properly canonicalized)
+unique_eqs = set()
+for eq in result['all_equations']:
+    # Simplify and use SymPy's internal representation
+    canonical = sp.simplify(eq['equation'])
+    unique_eqs.add(canonical)
+
+print(f"Unique equations: {len(unique_eqs)}")
+for eq in unique_eqs:
+    print(f"  {eq} = 0")
+
+# op_id=6
+# Vs=repr_s_np[op_id]
+# Vp=repr_p_np[op_id]
+# Vd=repr_d_np[op_id]
+# Vf=repr_f_np[op_id]
+# V_submatrix=orbital_to_submatrix(parsed_config['atom_types']["N"]['orbitals'],Vs,Vp,Vd,Vf)
+# print(V_submatrix)
+# print(Vp)
