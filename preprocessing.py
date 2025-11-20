@@ -529,6 +529,13 @@ B_center_atom = atomIndex([0, 0, 0], B_center_frac, atm0, lattice_basis)
 
 
 def get_next(center_atom, nghb_atom, group_mat):
+    """
+    relocate origin to center_atom, and get symmetry transformed atoms
+    :param center_atom:
+    :param nghb_atom:
+    :param group_mat:
+    :return:
+    """
     R = group_mat[:, :3]
     b = group_mat[:, 3]
     # print(R)
@@ -537,6 +544,7 @@ def get_next(center_atom, nghb_atom, group_mat):
     nghb_cart_coord = nghb_atom.cart_coord
     diff_vec = nghb_cart_coord - center_cart_coord
     next_cart_coord = center_cart_coord + R @ diff_vec + b
+    # next_cart_coord=R@nghb_cart_coord+b
     return next_cart_coord
 
 
@@ -550,16 +558,18 @@ class hopping():
         self.to_atom = to_atom
         self.from_atom = from_atom
         self.class_id = class_id
-        self.operation_idx = operation_idx  # Which space group operation
+        self.operation_idx = operation_idx  # Which space group operation transforms root to this hopping
         self.rotation_matrix = rotation_matrix  # R (3x3 matrix)
         self.translation_vector = translation_vector  # b (3-vector)
+        self.T = None  # Hopping matrix (to be filled later)
 
     def conjugate(self):
         return [deepcopy(self.from_atom), deepcopy(self.to_atom)]
 
     def __repr__(self):
-        return (f"hopping(from={self.from_atom}, to={self.to_atom}, "
-                f"class_id={self.class_id}, op={self.operation_idx})")
+        t_status = "T=None" if self.T is None else f"T={self.T.shape if hasattr(self.T, 'shape') else 'set'}"
+        return (f"hopping(from={self.from_atom.atom_name}, to={self.to_atom.atom_name}, "
+                f"class_id={self.class_id}, op={self.operation_idx}, {t_status})")
 
 
 print("\n" + "=" * 60)
@@ -1819,64 +1829,512 @@ def get_stabilizer_constraints(root, parsed_config, tree_idx):
     }
 
 
-# Usage example:
-tree_idx = 5
+# # Usage example:
+# tree_idx = 10
+# root = all_roots_sorted[tree_idx]
+#
+# result = get_stabilizer_constraints(root, parsed_config, tree_idx)
+#
+# print("=" * 80)
+# print(f"TREE {tree_idx} CONSTRAINTS")
+# print("=" * 80)
+# print_tree(root)
+# print(f"\nRoot stabilizer: {result['root_stabilizer']}")
+# print(f"Number of stabilizer operations: {len(result['root_stabilizer'])}")
+#
+# print("\nHopping matrix T:")
+# sp.pprint(result['T'])
+#
+# print("\n" + "=" * 80)
+# print("CONSTRAINTS FROM EACH STABILIZER OPERATION")
+# print("=" * 80)
+#
+# for constraint in result['constraints']:
+#     print(f"\nOperation {constraint['op_id']} (stabilizer index {constraint['stab_id']}):")
+#     print(f"V_to:\n{constraint['V_to']}")
+#     print(f"V_from:\n{constraint['V_from']}")
+#
+#     if len(constraint['equations']) == 0:
+#         print("✓ No constraints (T is invariant)")
+#     else:
+#         print(f"Constraint equations ({len(constraint['equations'])} total):")
+#         for eq in constraint['equations']:
+#             print(f"  T[{eq['element'][0]},{eq['element'][1]}]: {eq['equation']} = 0")
+#
+#     print("\nDifference matrix (T - V_to*T*V_from^†):")
+#     sp.pprint(constraint['diff_T'])
+#
+# print("\n" + "=" * 80)
+# print("ALL UNIQUE CONSTRAINT EQUATIONS")
+# print("=" * 80)
+# print(f"Total equations: {len(result['all_equations'])}")
+# for eq in result['all_equations']:
+#     sp.pprint(eq)
+#
+# def are_equivalent_equations(eq1, eq2):
+#     """Check if two equations are mathematically equivalent"""
+#     return sp.simplify(eq1 - eq2) == 0
+# # Get unique equations
+# unique_eqs = []
+# for eq in result['all_equations']:
+#     canonical = sp.simplify(eq['equation'])
+#     # Check if this equation is already in unique_eqs
+#     if not any(are_equivalent_equations(canonical, existing) for existing in unique_eqs):
+#         unique_eqs.append(canonical)
+#
+# print(f"Unique equations: {len(unique_eqs)}")
+# for eq in unique_eqs:
+#     print(f"  {eq} = 0")
+#
+# # sp.pprint(result['T'])
+#
+#
+# def equations_to_matrix_form(equations):
+#     """
+#     Convert a list of linear equations to matrix form Ax = 0
+#
+#     Args:
+#         equations: list of sympy expressions (each equation = 0)
+#
+#     Returns:
+#         A: coefficient matrix (sympy.Matrix)
+#         x: vector of variables (sympy.Matrix)
+#         free_symbols: list of all unique symbols
+#     """
+#     # Collect all unique symbols (variables) from all equations
+#     all_symbols = set()
+#     for eq in equations:
+#         all_symbols.update(eq.free_symbols)
+#     # Sort symbols for consistent ordering (optional but recommended)
+#     sorted_symbols = sorted(all_symbols, key=lambda s: str(s))
+#     # Create coefficient matrix
+#     n_equations = len(equations)
+#     n_variables = len(sorted_symbols)
+#     A = sp.zeros(n_equations, n_variables)
+#     for i, eq in enumerate(equations):
+#         # Expand and collect coefficients
+#         eq_expanded = sp.expand(eq)
+#         for j, symbol in enumerate(sorted_symbols):
+#             # Get coefficient of this symbol in this equation
+#             A[i, j] = eq_expanded.coeff(symbol)
+#     # Create variable vector
+#     x = sp.Matrix(sorted_symbols)
+#     return A, x, sorted_symbols
+#
+#
+# # Convert to matrix form
+# A, x, symbols = equations_to_matrix_form(unique_eqs)
+#
+# print("="*60)
+# print("ORIGINAL MATRIX A")
+# print("="*60)
+# sp.pprint(A)
+# print(f"\nShape: {A.shape[0]} equations × {A.shape[1]} variables")
+#
+# # Get RREF
+# print("\n" + "="*60)
+# print("REDUCED ROW ECHELON FORM (RREF)")
+# print("="*60)
+#
+# A_rref, pivot_cols = A.rref()
+#
+# sp.pprint(A_rref)
+# print(f"\nPivot columns: {pivot_cols}")
+# print(f"Rank: {len(pivot_cols)}")
+# print(f"Nullity (free variables): {len(symbols) - len(pivot_cols)}")
+#
+# # Identify free and dependent variables
+# free_var_indices = [i for i in range(len(symbols)) if i not in pivot_cols]
+# dependent_var_indices = list(pivot_cols)
+#
+# print(f"\nDependent variables (columns {dependent_var_indices}): {[symbols[i] for i in dependent_var_indices]}")
+# print(f"Free variables (columns {free_var_indices}): {[symbols[i] for i in free_var_indices]}")
+#
+# # Get REF (for comparison)
+# print("\n" + "="*60)
+# print("ROW ECHELON FORM (REF) - Not Reduced")
+# print("="*60)
+#
+# A_ref = A.echelon_form()
+# sp.pprint(A_ref)
+#
+# # ==============================================================================
+# # STEP 21: Identify free and dependent variables, express dependencies
+# # ==============================================================================
+# print("\n" + "=" * 60)
+# print("EXPRESSING DEPENDENT VARIABLES IN TERMS OF FREE VARIABLES")
+# print("=" * 60)
+# # Get free and dependent variable indices from pivot columns
+# free_var_indices = [i for i in range(len(symbols)) if i not in pivot_cols]
+# dependent_var_indices = list(pivot_cols)
+# print(f"\nFree variables ({len(free_var_indices)}):")
+# for idx in free_var_indices:
+#     print(f"  {symbols[idx]}")
+#
+# print(f"\nDependent variables ({len(dependent_var_indices)}):")
+# for idx in dependent_var_indices:
+#     print(f"  {symbols[idx]}")
+#
+#
+# # Express dependent variables in terms of free variables
+# print("\n" + "-" * 60)
+# print("DEPENDENT VARIABLES AS FUNCTIONS OF FREE VARIABLES")
+# print("-" * 60)
+# dependent_expressions = {}
+#
+# for row_idx, col_idx in enumerate(pivot_cols):
+#     if row_idx < A_rref.shape[0]:
+#         # Get the dependent variable (pivot variable in this row)
+#         dependent_var = symbols[col_idx]
+#         # Build expression: collect free variable terms from this row
+#         expr_terms = []
+#         for free_idx in free_var_indices:
+#             coeff = -A_rref[row_idx, free_idx]  # Negative because we move to RHS
+#             if coeff != 0:
+#                 expr_terms.append(coeff * symbols[free_idx])
+#
+#         # Sum all terms
+#         if expr_terms:
+#             expression = sum(expr_terms)
+#         else:
+#             expression = sp.Integer(0)
+#         dependent_expressions[dependent_var] = expression
+#         print(f"{dependent_var} = {expression}")
+#
+#
+# # Reconstruct T with substitutions
+# print("\n" + "=" * 60)
+# print("RECONSTRUCTED HOPPING MATRIX T")
+# print("=" * 60)
+#
+# T_reconstructed = result['T'].copy()
+#
+# # Substitute dependent variables with their expressions
+# for dep_var, expr in dependent_expressions.items():
+#     T_reconstructed = T_reconstructed.subs(dep_var, expr)
+#
+# print("\nOriginal T:")
+# sp.pprint(result['T'])
+#
+# print("\nReconstructed T (in terms of free variables only):")
+# sp.pprint(T_reconstructed)
+#
+# print(f"\nNumber of independent parameters: {len(free_var_indices)}")
+# print(f"Independent parameters: {[symbols[i] for i in free_var_indices]}")
+
+
+# ==============================================================================
+# STEP 21: Define functions for constraint analysis
+# ==============================================================================
+
+def are_equivalent_equations(eq1, eq2):
+    """Check if two equations are mathematically equivalent"""
+    return sp.simplify(eq1 - eq2) == 0
+
+
+def get_unique_equations(all_equations):
+    """
+    Extract unique equations from a list of equation dictionaries
+
+    Args:
+        all_equations: List of dicts with 'equation' key
+
+    Returns:
+        List of unique sympy expressions
+    """
+    unique_eqs = []
+    for eq in all_equations:
+        canonical = sp.simplify(eq['equation'])
+        # Check if this equation is already in unique_eqs
+        if not any(are_equivalent_equations(canonical, existing) for existing in unique_eqs):
+            unique_eqs.append(canonical)
+    return unique_eqs
+
+
+def equations_to_matrix_form(equations, tolerance=1e-10):
+    """
+    Convert a list of linear equations to matrix form Ax = 0
+
+    Args:
+        equations: list of sympy expressions (each equation = 0)
+        tolerance: numerical tolerance for treating values as zero
+
+    Returns:
+        A: coefficient matrix (sympy.Matrix)
+        x: vector of variables (sympy.Matrix)
+        symbols: list of all unique symbols
+    """
+    # Collect all unique symbols (variables) from all equations
+    all_symbols = set()
+    for eq in equations:
+        all_symbols.update(eq.free_symbols)
+
+    # Sort symbols for consistent ordering
+    sorted_symbols = sorted(all_symbols, key=lambda s: str(s))
+
+    # Create coefficient matrix using numpy first for numerical operations
+    n_equations = len(equations)
+    n_variables = len(sorted_symbols)
+    A_np = np.zeros((n_equations, n_variables))
+
+    for i, eq in enumerate(equations):
+        # Expand and collect coefficients
+        eq_expanded = sp.expand(eq)
+        for j, symbol in enumerate(sorted_symbols):
+            # Get coefficient of this symbol in this equation
+            coeff = eq_expanded.coeff(symbol)
+            # Convert to float if possible, otherwise evaluate numerically
+            try:
+                coeff_val = float(coeff)
+            except (TypeError, ValueError):
+                coeff_val = complex(coeff).real if coeff != 0 else 0.0
+
+            # Apply tolerance threshold
+            if abs(coeff_val) < tolerance:
+                coeff_val = 0.0
+
+            A_np[i, j] = coeff_val
+
+    # Convert numpy array to sympy Matrix
+    # Round very small values to exact zeros
+    A = sp.Matrix(A_np)
+
+    # Create variable vector
+    x = sp.Matrix(sorted_symbols)
+
+    return A, x, sorted_symbols
+
+
+def get_dependent_expressions(A_rref, pivot_cols, symbols, tolerance=1e-10):
+    """
+    Express dependent variables in terms of free variables
+
+    Args:
+        A_rref: Reduced row echelon form matrix
+        pivot_cols: Tuple of pivot column indices
+        symbols: List of all symbols
+        tolerance: numerical tolerance for treating values as zero
+
+    Returns:
+        dict: Maps dependent variables to their expressions in terms of free variables
+    """
+    free_var_indices = [i for i in range(len(symbols)) if i not in pivot_cols]
+    dependent_expressions = {}
+
+    for row_idx, col_idx in enumerate(pivot_cols):
+        if row_idx < A_rref.shape[0]:
+            # Get the dependent variable (pivot variable in this row)
+            dependent_var = symbols[col_idx]
+
+            # Build expression: collect free variable terms from this row
+            expr_terms = []
+            for free_idx in free_var_indices:
+                coeff = -A_rref[row_idx, free_idx]  # Negative because we move to RHS
+
+                # Apply tolerance - treat very small coefficients as zero
+                try:
+                    coeff_val = float(coeff)
+                    if abs(coeff_val) < tolerance:
+                        coeff = 0
+                    else:
+                        # Round to reasonable precision
+                        coeff = sp.nsimplify(coeff, rational=True, tolerance=tolerance)
+                except (TypeError, ValueError):
+                    pass
+
+                if coeff != 0:
+                    expr_terms.append(coeff * symbols[free_idx])
+
+            # Sum all terms
+            if expr_terms:
+                expression = sum(expr_terms)
+            else:
+                expression = sp.Integer(0)
+
+            dependent_expressions[dependent_var] = expression
+
+    return dependent_expressions
+
+
+def reconstruct_hopping_matrix(T_original, dependent_expressions):
+    """
+    Reconstruct hopping matrix with only free variables
+
+    Args:
+        T_original: Original symbolic hopping matrix
+        dependent_expressions: Dict mapping dependent vars to expressions
+
+    Returns:
+        sympy.Matrix: Reconstructed matrix in terms of free variables only
+    """
+    T_reconstructed = T_original.copy()
+
+    # Substitute dependent variables with their expressions
+    for dep_var, expr in dependent_expressions.items():
+        T_reconstructed = T_reconstructed.subs(dep_var, expr)
+
+    return T_reconstructed
+
+
+def analyze_tree_constraints(root, parsed_config, tree_idx, verbose=True, tolerance=1e-10):
+    """
+    Complete constraint analysis for a single tree
+
+    Args:
+        root: vertex object (root of tree)
+        parsed_config: Configuration dictionary
+        tree_idx: Tree index number
+        verbose: Whether to print detailed output
+        tolerance: numerical tolerance for RREF computation
+
+    Returns:
+        dict: Complete analysis results including T, constraints, RREF, etc.
+    """
+    if verbose:
+        print("=" * 80)
+        print(f"TREE {tree_idx} CONSTRAINT ANALYSIS")
+        print("=" * 80)
+        print_tree(root)
+
+    # Step 1: Get stabilizer constraints
+    root_stab_result = get_stabilizer_constraints(root, parsed_config, tree_idx)
+
+    if verbose:
+        print(f"\nRoot stabilizer: {root_stab_result['root_stabilizer']}")
+        print(f"Number of stabilizer operations: {len(root_stab_result['root_stabilizer'])}")
+        print("\nHopping matrix T:")
+        sp.pprint(root_stab_result['T'])
+
+    # Step 2: Get unique equations
+    unique_eqs = get_unique_equations(root_stab_result['all_equations'])
+
+    if verbose:
+        print(f"\nUnique constraint equations: {len(unique_eqs)}")
+        for i, eq in enumerate(unique_eqs):
+            print(f"  Eq {i}: {eq} = 0")
+
+    # Step 3: Convert to matrix form if there are constraints
+    if len(unique_eqs) > 0:
+        A, x, symbols = equations_to_matrix_form(unique_eqs, tolerance=tolerance)
+
+        if verbose:
+            print("\n" + "=" * 60)
+            print("CONSTRAINT MATRIX A")
+            print("=" * 60)
+            sp.pprint(A)
+            print(f"\nShape: {A.shape[0]} equations × {A.shape[1]} variables")
+
+        # Step 4: Get RREF with sympy (which uses exact arithmetic after conversion)
+        # But first, convert small values to exact zeros
+        A_cleaned = A.applyfunc(lambda x: 0 if abs(float(x)) < tolerance else x)
+        A_rref, pivot_cols = A_cleaned.rref()
+
+        # Clean up RREF result - remove numerical noise
+        A_rref = A_rref.applyfunc(
+            lambda x: 0 if abs(float(x)) < tolerance else sp.nsimplify(x, rational=True, tolerance=tolerance))
+
+        if verbose:
+            print("\n" + "=" * 60)
+            print("REDUCED ROW ECHELON FORM (RREF)")
+            print("=" * 60)
+            sp.pprint(A_rref)
+            print(f"\nPivot columns: {pivot_cols}")
+            print(f"Rank: {len(pivot_cols)}")
+            print(f"Nullity (free variables): {len(symbols) - len(pivot_cols)}")
+
+        # Step 5: Identify free and dependent variables
+        free_var_indices = [i for i in range(len(symbols)) if i not in pivot_cols]
+        dependent_var_indices = list(pivot_cols)
+
+        if verbose:
+            print(f"\nFree variables ({len(free_var_indices)}):")
+            for idx in free_var_indices:
+                print(f"  {symbols[idx]}")
+
+            print(f"\nDependent variables ({len(dependent_var_indices)}):")
+            for idx in dependent_var_indices:
+                print(f"  {symbols[idx]}")
+
+        # Step 6: Express dependent variables in terms of free variables
+        dependent_expressions = get_dependent_expressions(A_rref, pivot_cols, symbols, tolerance=tolerance)
+
+        if verbose:
+            print("\n" + "-" * 60)
+            print("DEPENDENT VARIABLES AS FUNCTIONS OF FREE VARIABLES")
+            print("-" * 60)
+            for dep_var, expr in dependent_expressions.items():
+                print(f"{dep_var} = {expr}")
+
+        # Step 7: Reconstruct hopping matrix
+        T_reconstructed = reconstruct_hopping_matrix(root_stab_result['T'], dependent_expressions)
+
+        if verbose:
+            print("\n" + "=" * 60)
+            print("RECONSTRUCTED HOPPING MATRIX T")
+            print("=" * 60)
+            print("\nOriginal T:")
+            sp.pprint(root_stab_result['T'])
+            print("\nReconstructed T (in terms of free variables only):")
+            sp.pprint(T_reconstructed)
+            print(f"\nNumber of independent parameters: {len(free_var_indices)}")
+            print(f"Independent parameters: {[symbols[i] for i in free_var_indices]}")
+
+        # Store results
+        root_stab_result.update({
+            'unique_equations': unique_eqs,
+            'constraint_matrix': A,
+            'constraint_matrix_rref': A_rref,
+            'pivot_cols': pivot_cols,
+            'symbols': symbols,
+            'free_var_indices': free_var_indices,
+            'dependent_var_indices': dependent_var_indices,
+            'dependent_expressions': dependent_expressions,
+            'T_reconstructed': T_reconstructed,
+            'rank': len(pivot_cols),
+            'nullity': len(symbols) - len(pivot_cols)
+        })
+    else:
+        # No constraints - all parameters are free
+        if verbose:
+            print("\n✓ No constraints from stabilizer - all matrix elements are independent")
+
+        total_params = root_stab_result['T'].shape[0] * root_stab_result['T'].shape[1]
+        root_stab_result.update({
+            'unique_equations': [],
+            'constraint_matrix': None,
+            'constraint_matrix_rref': None,
+            'pivot_cols': (),
+            'symbols': [],
+            'free_var_indices': list(range(total_params)),
+            'dependent_var_indices': [],
+            'dependent_expressions': {},
+            'T_reconstructed': root_stab_result['T'].copy(),
+            'rank': 0,
+            'nullity': total_params
+        })
+
+    return root_stab_result
+
+
+# ==============================================================================
+# STEP 22: Usage example - analyze a single tree
+# ==============================================================================
+
+# Analyze tree 10 with custom tolerance
+tree_idx = 3
 root = all_roots_sorted[tree_idx]
 
-result = get_stabilizer_constraints(root, parsed_config, tree_idx)
+analysis_result = analyze_tree_constraints(root, parsed_config, tree_idx, verbose=True, tolerance=1e-8)
 
-print("=" * 80)
-print(f"TREE {tree_idx} CONSTRAINTS")
-print("=" * 80)
-print_tree(root)
-print(f"\nRoot stabilizer: {result['root_stabilizer']}")
-print(f"Number of stabilizer operations: {len(result['root_stabilizer'])}")
-
-print("\nHopping matrix T:")
-sp.pprint(result['T'])
-
+# Access results
 print("\n" + "=" * 80)
-print("CONSTRAINTS FROM EACH STABILIZER OPERATION")
+print("ANALYSIS SUMMARY")
 print("=" * 80)
+print(
+    f"Total parameters in T: {analysis_result['T'].shape[0]} × {analysis_result['T'].shape[1]} = {analysis_result['T'].shape[0] * analysis_result['T'].shape[1]}")
+print(f"Number of constraints: {len(analysis_result['unique_equations'])}")
+print(f"Rank of constraint matrix: {analysis_result['rank']}")
+print(f"Number of free parameters: {analysis_result['nullity']}")
+root.hopping.T=analysis_result['T_reconstructed']
+sp.pprint(root.hopping.T)
 
-for constraint in result['constraints']:
-    print(f"\nOperation {constraint['op_id']} (stabilizer index {constraint['stab_id']}):")
-    print(f"V_to:\n{constraint['V_to']}")
-    print(f"V_from:\n{constraint['V_from']}")
-
-    if len(constraint['equations']) == 0:
-        print("✓ No constraints (T is invariant)")
-    else:
-        print(f"Constraint equations ({len(constraint['equations'])} total):")
-        for eq in constraint['equations']:
-            print(f"  T[{eq['element'][0]},{eq['element'][1]}]: {eq['equation']} = 0")
-
-    print("\nDifference matrix (T - V_to*T*V_from^†):")
-    sp.pprint(constraint['diff_T'])
-
-print("\n" + "=" * 80)
-print("ALL UNIQUE CONSTRAINT EQUATIONS")
-print("=" * 80)
-print(f"Total equations: {len(result['all_equations'])}")
-for eq in result['all_equations']:
-    sp.pprint(eq)
-
-# Get unique equations (properly canonicalized)
-unique_eqs = set()
-for eq in result['all_equations']:
-    # Simplify and use SymPy's internal representation
-    canonical = sp.simplify(eq['equation'])
-    unique_eqs.add(canonical)
-
-print(f"Unique equations: {len(unique_eqs)}")
-for eq in unique_eqs:
-    print(f"  {eq} = 0")
-
-# op_id=6
-# Vs=repr_s_np[op_id]
-# Vp=repr_p_np[op_id]
-# Vd=repr_d_np[op_id]
-# Vf=repr_f_np[op_id]
-# V_submatrix=orbital_to_submatrix(parsed_config['atom_types']["N"]['orbitals'],Vs,Vp,Vd,Vf)
-# print(V_submatrix)
-# print(Vp)
