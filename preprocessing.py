@@ -655,9 +655,9 @@ for item in neigboring_BB:
     neigboring_BB_cartesian.append([cell, cart_coord])
 
 # Get space group matrices in Cartesian coordinates
-eps = 1e-8
+eps = 1e-5
 space_group_bilbao_cart = []
-for item in space_group_representations["space_group_matrices_cartesian"]:
+for item in space_group_matrices_cartesian:
     space_group_bilbao_cart.append(np.array(item))
 
 # Create BB_atoms with orbital representations
@@ -784,6 +784,7 @@ def get_next(center_atom, nghb_atom, group_mat):
     nghb_cart_coord = nghb_atom.cart_coord
     diff_vec = nghb_cart_coord - center_cart_coord
     next_cart_coord = center_cart_coord + R @ diff_vec + b
+    # next_cart_coord=R@nghb_cart_coord+b
     return next_cart_coord
 
 
@@ -1355,38 +1356,137 @@ print(f"\nTotal roots: {len(all_roots_sorted)}")
 print(f"  BB roots: {len(tree_roots)}")
 print(f"  BN roots (with hermitian children): {len(tree_roots_BN)}")
 print(f"  NN roots: {len(tree_roots_NN)}")
-print(f"  Independent roots: {len(independent_groups)}")
+# print(f"  Independent roots: {len(independent_groups)}")
 
 
 # ==============================================================================
 # Helper functions for constraint analysis
 # ==============================================================================
-def stabilizer(atom):
-    """Find stabilizer operations for an atom"""
-    stabilizer_op_id_list = []
-    atom_cart_coord = atom.cart_coord
+# def stabilizer(atom):
+#     """Find stabilizer operations for an atom"""
+#     stabilizer_op_id_list = []
+#     atom_cart_coord = atom.cart_coord
+#
+#     for op_idx, group_mat in enumerate(space_group_bilbao_cart):
+#         R = group_mat[:3, :3]
+#         b = group_mat[:3, 3]
+#         atom_cart_transformed = R @ atom_cart_coord + b
+#         if np.linalg.norm(atom_cart_coord - atom_cart_transformed, ord=2) < 1e-6:
+#             stabilizer_op_id_list.append(op_idx)
+#
+#     return set(stabilizer_op_id_list)
 
-    for op_idx, group_mat in enumerate(space_group_bilbao_cart):
-        R = group_mat[:3, :3]
-        b = group_mat[:3, 3]
-        atom_cart_transformed = R @ atom_cart_coord + b
-        if np.linalg.norm(atom_cart_coord - atom_cart_transformed, ord=2) < 1e-6:
-            stabilizer_op_id_list.append(op_idx)
+# def stabilizer(atom):
+#     """Find stabilizer operations for an atom (considering lattice translations)"""
+#     stabilizer_op_id_list = []
+#     atom_cart_coord = atom.cart_coord
+#
+#     # Get lattice basis vectors
+#     a0, a1, a2 = lattice_basis
+#
+#     for op_idx, group_mat in enumerate(space_group_bilbao_cart):
+#         R = group_mat[:3, :3]
+#         b = group_mat[:3, 3]
+#
+#         # Apply symmetry operation
+#         atom_cart_transformed = R @ atom_cart_coord + b
+#
+#         # Compute difference vector
+#         diff = atom_cart_transformed - atom_cart_coord
+#
+#         # Check if diff is a lattice vector: diff = n0*a0 + n1*a1 + n2*a2
+#         # Solve: [a0 a1 a2] * [n0, n1, n2]^T = diff
+#         lattice_matrix = np.column_stack([a0, a1, a2])
+#
+#         try:
+#             n_vector = np.linalg.solve(lattice_matrix, diff)
+#             n_rounded = np.round(n_vector)
+#
+#             # Check if n_vector is close to integer values
+#             if np.allclose(n_vector, n_rounded, atol=1e-6):
+#                 stabilizer_op_id_list.append(op_idx)
+#         except np.linalg.LinAlgError:
+#             # Matrix is singular (shouldn't happen for valid lattice basis)
+#             continue
+#
+#     return set(stabilizer_op_id_list)
+def clean_small_coefficients(expr, tolerance=1e-6):
+    """
+    Recursively clean small numerical coefficients in a SymPy expression
 
-    return set(stabilizer_op_id_list)
+    Args:
+        expr: SymPy expression or Matrix
+        tolerance: Values smaller than this are set to zero
 
+    Returns:
+        Cleaned expression
+    """
+    if isinstance(expr, sp.Matrix):
+        return expr.applyfunc(lambda x: clean_small_coefficients(x, tolerance))
+
+    if expr.is_Number:
+        if abs(float(expr)) < tolerance:
+            return sp.Integer(0)
+        return expr
+
+    if expr.is_Add:
+        new_terms = []
+        for term in expr.as_ordered_terms():
+            cleaned = clean_small_coefficients(term, tolerance)
+            if cleaned != 0:
+                new_terms.append(cleaned)
+        return sp.Add(*new_terms) if new_terms else sp.Integer(0)
+
+    if expr.is_Mul:
+        coeff, rest = expr.as_coeff_Mul()
+        if abs(float(coeff)) < tolerance:
+            return sp.Integer(0)
+        return expr
+
+    return expr
 
 def find_root_stabilizer(root):
     """Find stabilizer operations for a hopping root"""
     to_atom = root.hopping.to_atom
     from_atom = root.hopping.from_atom
 
-    to_atom_stabilizer = stabilizer(to_atom)
-    from_atom_stabilizer = stabilizer(from_atom)
+    to_atom_cart_coord = to_atom.cart_coord
+    from_atom_cart_coord = from_atom.cart_coord
 
-    root_stabilizer = to_atom_stabilizer.intersection(from_atom_stabilizer)
+    # Get lattice basis vectors
+    a0, a1, a2 = lattice_basis
+    lattice_matrix = np.column_stack([a0, a1, a2])
 
-    return root_stabilizer
+    root_stabilizer = []
+
+    for op_idx, group_mat in enumerate(space_group_bilbao_cart):
+        R = group_mat[:3, :3]
+        b = group_mat[:3, 3]
+
+        # Apply symmetry operation to both atoms
+        to_atom_transformed = R @ to_atom_cart_coord + b
+        from_atom_transformed = R @ from_atom_cart_coord + b
+
+        # Compute difference vectors
+        diff_to = to_atom_transformed - to_atom_cart_coord
+        diff_from = from_atom_transformed - from_atom_cart_coord
+
+        # Check if both differences are the SAME lattice vector
+        diff = diff_to - diff_from
+
+        if np.linalg.norm(diff) < 1e-6:
+            # Both atoms translated by same lattice vector
+            # Verify it's actually a lattice vector
+            try:
+                n_vector = np.linalg.solve(lattice_matrix, diff_to)
+                n_rounded = np.round(n_vector)
+
+                if np.allclose(n_vector, n_rounded, atol=1e-6):
+                    root_stabilizer.append(op_idx)
+            except np.linalg.LinAlgError:
+                continue
+
+    return set(root_stabilizer)
 
 
 def create_hopping_matrix(root, parsed_config, tree_idx):
@@ -1464,7 +1564,7 @@ def get_stabilizer_constraints(root, parsed_config, tree_idx):
         V_from = root_from_atom.get_sympy_representation_matrix(op_id)
 
         # Compute transformed T: V_to * T * V_from^†
-        transformed_T = V_to * T * V_from.H
+        transformed_T = V_to @ T @ V_from.H
 
         # Compute difference
         diff_T = T - transformed_T
@@ -1571,16 +1671,14 @@ def get_dependent_expressions(A_rref, pivot_cols, symbols, tolerance=1e-10):
             for free_idx in free_var_indices:
                 coeff = -A_rref[row_idx, free_idx]
 
+                # Simply convert to float, no rationalization
                 try:
                     coeff_val = float(coeff)
-                    if abs(coeff_val) < tolerance:
-                        coeff = 0
-                    else:
-                        coeff = sp.nsimplify(coeff, rational=True, tolerance=tolerance)
                 except (TypeError, ValueError):
-                    pass
+                    coeff_val = complex(coeff).real if coeff != 0 else 0.0
 
-                if coeff != 0:
+                if abs(coeff_val) >= tolerance:
+                    coeff = sp.Float(coeff_val, precision=15)
                     expr_terms.append(coeff * symbols[free_idx])
 
             if expr_terms:
@@ -1591,7 +1689,6 @@ def get_dependent_expressions(A_rref, pivot_cols, symbols, tolerance=1e-10):
             dependent_expressions[dependent_var] = expression
 
     return dependent_expressions
-
 
 def reconstruct_hopping_matrix(T_original, dependent_expressions):
     """Reconstruct hopping matrix with only free variables"""
@@ -1638,14 +1735,17 @@ def analyze_tree_constraints(root, parsed_config, tree_idx, verbose=True, tolera
         A_cleaned = A.applyfunc(lambda x: 0 if abs(float(x)) < tolerance else x)
         A_rref, pivot_cols = A_cleaned.rref()
 
-        A_rref = A_rref.applyfunc(
-            lambda x: 0 if abs(float(x)) < tolerance else sp.nsimplify(x, rational=True, tolerance=tolerance))
+        # A_rref = A_rref.applyfunc(
+        #     lambda x: 0 if abs(float(x)) < tolerance else sp.nsimplify(x, rational=True, tolerance=tolerance))
 
+        A_rref = A_rref.applyfunc(
+            lambda x: 0 if abs(float(x)) < tolerance else sp.Float(float(x), precision=15))
         free_var_indices = [i for i in range(len(symbols)) if i not in pivot_cols]
         dependent_var_indices = list(pivot_cols)
 
         dependent_expressions = get_dependent_expressions(A_rref, pivot_cols, symbols, tolerance=tolerance)
         T_reconstructed = reconstruct_hopping_matrix(root_stab_result['T'], dependent_expressions)
+        T_reconstructed = clean_small_coefficients(T_reconstructed, tolerance=tolerance)  # ADD THIS LINE
 
         root_stab_result.update({
             'unique_equations': unique_eqs,
@@ -1719,7 +1819,7 @@ def print_tree(root, prefix="", is_last=True, show_details=True):
             is_last_child = (i == len(root.children) - 1)
             print_tree(child, new_prefix, is_last_child, show_details)
 
-def propagate_T_to_child(parent_vertex, child_vertex):
+def propagate_T_to_child(parent_vertex, child_vertex, tolerance=1e-5):
     """
     Propagate hopping matrix T from parent to child using symmetry operations.
 
@@ -1761,6 +1861,7 @@ def propagate_T_to_child(parent_vertex, child_vertex):
 
     # Simplify the result
     T_child = sp.simplify(T_child)
+    T_child = clean_small_coefficients(T_child, tolerance=tolerance)
 
     # Assign to child
     child_vertex.hopping.T = T_child
@@ -1790,7 +1891,7 @@ def propagate_T_to_child(parent_vertex, child_vertex):
 # ==============================================================================
 # Helper function: Propagate to all children using BFS
 # ==============================================================================
-def propagate_to_all_children(parent_vertex, verbose=False):
+def propagate_to_all_children(parent_vertex, verbose=False, tolerance=1e-6):
     """
     Propagate T from parent to all descendants using BFS (breadth-first search)
 
@@ -1827,7 +1928,7 @@ def propagate_to_all_children(parent_vertex, verbose=False):
         parent, child, level = queue.popleft()
 
         # Propagate T from parent to child
-        propagate_T_to_child(parent, child)
+        propagate_T_to_child(parent, child, tolerance=tolerance)
         total_propagated += 1
         max_level = max(max_level, level)
 
@@ -2034,7 +2135,11 @@ def print_tree_with_T(root, prefix="", is_last=True, show_T=True):
 # ==============================================================================
 # Helper function: Verify constraints for a vertex
 # ==============================================================================
-def verify_constraint(vertex, verbose=True):
+
+# ==============================================================================
+# Helper function: Verify all vertices in a tree
+# ==============================================================================
+def verify_constraint(vertex, verbose=True, tolerance=1e-5):
     """
     Verify that a vertex's T matrix satisfies all stabilizer constraints.
 
@@ -2043,6 +2148,7 @@ def verify_constraint(vertex, verbose=True):
     Args:
         vertex: vertex object with hopping.T assigned
         verbose: whether to print detailed results
+        tolerance: tolerance for numerical comparisons
 
     Returns:
         dict: {
@@ -2085,16 +2191,48 @@ def verify_constraint(vertex, verbose=True):
         V_from = from_atom.get_sympy_representation_matrix(op_id)
 
         # Compute transformed T: V_to * T * V_from^†
-        T_transformed = V_to * T_sp * V_from.H
+        T_transformed = V_to @ T_sp @ V_from.H
 
         # Compute difference
         diff = T_sp - T_transformed
         diff_simplified = sp.simplify(diff)
 
-        # Check if difference is zero matrix
-        is_zero = diff_simplified.equals(sp.zeros(*diff_simplified.shape))
+        # Check if all coefficients are below tolerance
+        is_satisfied = True
+        for i in range(diff_simplified.shape[0]):
+            for j in range(diff_simplified.shape[1]):
+                element = diff_simplified[i, j]
 
-        if not is_zero:
+                # Extract all numerical coefficients from the expression
+                if element != 0:
+                    # Get all numerical coefficients
+                    coeffs = []
+                    if element.is_Number:
+                        coeffs.append(abs(float(element)))
+                    else:
+                        # Extract coefficients from all terms
+                        for term in sp.Add.make_args(element):
+                            if term.is_Number:
+                                coeffs.append(abs(float(term)))
+                            else:
+                                # Get coefficient of the term
+                                coeff = term.as_coeff_Mul()[0]
+                                try:
+                                    coeffs.append(abs(float(coeff)))
+                                except (TypeError, ValueError):
+                                    # If can't convert to float, assume it's symbolic
+                                    is_satisfied = False
+                                    break
+
+                    # Check if any coefficient exceeds tolerance
+                    if coeffs and max(coeffs) > tolerance:
+                        is_satisfied = False
+                        break
+
+            if not is_satisfied:
+                break
+
+        if not is_satisfied:
             violations.append({
                 'op_id': op_id,
                 'stab_idx': stab_idx,
@@ -2105,6 +2243,7 @@ def verify_constraint(vertex, verbose=True):
                 print(f"  ❌ Stabilizer {stab_idx} (op={op_id}): VIOLATED")
                 print(f"     Difference matrix:")
                 sp.pprint(diff_simplified)
+                print(f"     (Max coefficient above tolerance {tolerance})")
         else:
             if verbose:
                 print(f"  ✓ Stabilizer {stab_idx} (op={op_id}): satisfied")
@@ -2129,121 +2268,13 @@ def verify_constraint(vertex, verbose=True):
 
 
 # ==============================================================================
-# Helper function: Verify all vertices in a tree
-# ==============================================================================
-def verify_tree_constraints(root, verbose=True):
-    """
-    Verify constraints for all vertices in a tree
-
-    Args:
-        root: Root vertex of tree
-        verbose: print detailed results
-
-    Returns:
-        dict: Summary of verification results
-    """
-    if verbose:
-        print("\n" + "=" * 80)
-        print("VERIFYING CONSTRAINTS FOR ENTIRE TREE")
-        print("=" * 80)
-
-    all_vertices = [root]
-    vertex_labels = ["ROOT"]
-
-    # Collect all vertices
-    def collect_vertices(vertex, label_prefix="CHILD", child_num=[0]):
-        for child in vertex.children:
-            all_vertices.append(child)
-            vertex_labels.append(f"{label_prefix}_{child_num[0]}")
-            child_num[0] += 1
-            collect_vertices(child, label_prefix, child_num)
-
-    collect_vertices(root)
-
-    # Verify each vertex
-    results = []
-    all_satisfied = True
-
-    for vertex, label in zip(all_vertices, vertex_labels):
-        if verbose:
-            print(f"\n{'─' * 80}")
-            print(f"{label} (op={vertex.hopping.operation_idx}, type={vertex.type})")
-            print(f"{'─' * 80}")
-
-        result = verify_constraint(vertex, verbose=verbose)
-        result['vertex_label'] = label
-        result['vertex'] = vertex  # Store reference to vertex
-        results.append(result)
-
-        if not result['satisfied']:
-            all_satisfied = False
-
-    # Final summary
-    if verbose:
-        print("\n" + "=" * 80)
-        print("TREE VERIFICATION SUMMARY")
-        print("=" * 80)
-        print(f"Total vertices checked: {len(all_vertices)}")
-
-        num_violations = sum(1 for r in results if not r['satisfied'])
-        if all_satisfied:
-            print("✓ ALL VERTICES SATISFY CONSTRAINTS")
-        else:
-            print(f"❌ {num_violations} vertices have violations")
-            print("\n" + "─" * 80)
-            print("DETAILED VIOLATION INFORMATION:")
-            print("─" * 80)
-
-            for r in results:
-                if not r['satisfied']:
-                    vertex = r['vertex']
-                    hop = vertex.hopping
-
-                    print(f"\n{r['vertex_label']}:")
-                    print(f"  Operation index: {hop.operation_idx}")
-                    print(f"  Vertex type: {vertex.type}")
-                    print(
-                        f"  To atom: {hop.to_atom.atom_name} at cell [{hop.to_atom.n0}, {hop.to_atom.n1}, {hop.to_atom.n2}]")
-                    print(
-                        f"  From atom: {hop.from_atom.atom_name} at cell [{hop.from_atom.n0}, {hop.from_atom.n1}, {hop.from_atom.n2}]")
-                    print(f"  Distance: {np.linalg.norm(hop.from_atom.cart_coord - hop.to_atom.cart_coord):.6f}")
-                    print(f"  Number of violated stabilizers: {r['num_violations']} out of {r['num_stabilizers']}")
-
-                    print(f"\n  Violated stabilizer operations:")
-                    for v in r['violations']:
-                        print(f"    - Stabilizer {v['stab_idx']} (operation {v['op_id']})")
-                        print(f"      Difference matrix (T - V_to * T * V_from^†):")
-                        diff_str = sp.pretty(v['diff_matrix'])
-                        for line in diff_str.split('\n'):
-                            print(f"        {line}")
-
-                    # Print the T matrix for this vertex
-                    if hop.T is not None:
-                        print(f"\n  Current T matrix:")
-                        T_str = sp.pretty(hop.T)
-                        for line in T_str.split('\n'):
-                            print(f"    {line}")
-                    else:
-                        print(f"\n  T matrix: None")
-
-                    print()  # Extra newline for readability
-
-        print("=" * 80)
-
-    return {
-        'all_satisfied': all_satisfied,
-        'total_vertices': len(all_vertices),
-        'num_violations': sum(1 for r in results if not r['satisfied']),
-        'results': results
-    }
-# ==============================================================================
 # STEP 14: Example usage - analyze a single tree
 # ==============================================================================
 print("\n" + "=" * 80)
 print("EXAMPLE: ANALYZING A SINGLE TREE")
 print("=" * 80)
 
-tree_idx = 2
+tree_idx = 10
 root = all_roots_sorted[tree_idx]
 
 # Verify atoms have representations
@@ -2260,8 +2291,7 @@ print("-" * 80)
 print_tree(root, show_details=True)
 
 # Run analysis
-analysis_result = analyze_tree_constraints(root, parsed_config, tree_idx, verbose=True, tolerance=1e-8)
-
+analysis_result = analyze_tree_constraints(root, parsed_config, tree_idx, verbose=True, tolerance=1e-5)
 # Print summary
 print("\n" + "=" * 80)
 print("ANALYSIS SUMMARY")
@@ -2276,7 +2306,7 @@ root.hopping.T = analysis_result['T_reconstructed']
 
 # Now propagate to all children
 print("\nPropagating to children:")
-propagate_to_all_children(root, verbose=True)
+propagate_to_all_children(root, verbose=True,tolerance=1e-5)
 
 # Print the tree WITH T matrices
 print("\n" + "=" * 80)
@@ -2294,5 +2324,6 @@ print("VERIFYING ROOT CONSTRAINTS")
 print("=" * 80)
 verify_result = verify_constraint(root, verbose=True)
 
-# Verify constraints for all vertices in the tree
-tree_verification = verify_tree_constraints(root, verbose=True)
+
+
+# print(space_group_matrices_cartesian)
