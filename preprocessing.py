@@ -8,6 +8,7 @@ from datetime import datetime
 from copy import deepcopy
 from scipy.linalg import block_diag
 import sympy as sp
+
 # ==============================================================================
 # Main preprocessing pipeline for tight-binding model setup
 # ==============================================================================
@@ -400,22 +401,195 @@ print("ORBITAL COMPLETION FINISHED")
 print("=" * 60)
 
 
+# ==============================================================================
+# Helper function: orbital_to_submatrix
+# ==============================================================================
+def orbital_to_submatrix(orbitals, Vs, Vp, Vd, Vf):
+    """
+    Extract submatrix from full orbital representation for specific orbitals
+
+    Args:
+        orbitals: List of orbital names (e.g., ['2s', '2px', '2py', '2pz'])
+        Vs, Vp, Vd, Vf: Representation matrices for s, p, d, f orbitals
+
+    Returns:
+        numpy array: Submatrix for the specified orbitals
+    """
+    full_orbitals = [
+        's',
+        'px', 'py', 'pz',
+        'dxy', 'dyz', 'dzx', 'd(x2-y2)', 'd(3z2-r2)',
+        'fz3', 'fxz3', 'fyz3', 'fxyz', 'fz(x2-y2)', 'fx(x2-3y2)', 'fy(3x2-y2)'
+    ]
+
+    # Remove leading numbers from orbitals (e.g., '2s' -> 's', '2pz' -> 'pz')
+    orbital_types = []
+    for orb in orbitals:
+        # Remove all leading digits
+        orbital_type = orb.lstrip('0123456789')
+        orbital_types.append(orbital_type)
+
+    # Sort orbitals by their position in full_orbitals
+    sorted_orbital_types = sorted(orbital_types, key=lambda orb: full_orbitals.index(orb))
+
+    # Get the indices in full_orbitals
+    orbital_indices = [full_orbitals.index(orb) for orb in sorted_orbital_types]
+
+    # Build full representation matrix
+    hopping_matrix_full = block_diag(Vs, Vp, Vd, Vf)
+
+    # Extract submatrix for the specific orbitals
+    V_submatrix = hopping_matrix_full[np.ix_(orbital_indices, orbital_indices)]
+
+    return V_submatrix
+
+
+# ==============================================================================
+# atomIndex class with orbital representations
+# ==============================================================================
+class atomIndex:
+    def __init__(self, cell, frac_coord, atom_name, basis, parsed_config=None,
+                 repr_s_np=None, repr_p_np=None, repr_d_np=None, repr_f_np=None):
+        """
+        Initialize an atom with position, orbital, and representation information
+
+        Args:
+            cell: [n0, n1, n2] unit cell indices
+            frac_coord: [f0, f1, f2] fractional coordinates
+            atom_name: atom type name (e.g., 'B', 'N')
+            basis: lattice basis vectors [a0, a1, a2]
+            parsed_config: configuration dict containing orbital information (optional)
+            repr_s_np, repr_p_np, repr_d_np, repr_f_np: representation matrices for s,p,d,f orbitals
+        """
+        self.n0 = cell[0]
+        self.n1 = cell[1]
+        self.n2 = cell[2]
+        self.atom_name = atom_name
+        self.frac_coord = frac_coord
+        self.basis = basis
+
+        # Calculate Cartesian coordinates
+        a0, a1, a2 = basis
+        f0, f1, f2 = frac_coord
+        cart_coord = (self.n0 + f0) * a0 + (self.n1 + f1) * a1 + (self.n2 + f2) * a2
+        self.cart_coord = cart_coord
+
+        # Store orbital information if config is provided
+        if parsed_config is not None and atom_name in parsed_config['atom_types']:
+            self.orbitals = parsed_config['atom_types'][atom_name]['orbitals']
+            self.num_orbitals = len(self.orbitals)
+        else:
+            self.orbitals = None
+            self.num_orbitals = 0
+
+        # Store representation matrices
+        self.repr_s_np = repr_s_np
+        self.repr_p_np = repr_p_np
+        self.repr_d_np = repr_d_np
+        self.repr_f_np = repr_f_np
+
+        # Pre-compute representation matrices for this atom's orbitals if available
+        self.orbital_representations = None
+        if (self.orbitals is not None and repr_s_np is not None):
+            self._compute_orbital_representations()
+
+    def _compute_orbital_representations(self):
+        """
+        Pre-compute orbital representation matrices for all space group operations
+        Returns a list where each element is the representation matrix for one operation
+        """
+        num_operations = len(self.repr_s_np)
+        self.orbital_representations = []
+
+        for op_idx in range(num_operations):
+            Vs = self.repr_s_np[op_idx]
+            Vp = self.repr_p_np[op_idx]
+            Vd = self.repr_d_np[op_idx]
+            Vf = self.repr_f_np[op_idx]
+
+            # Get submatrix for this atom's specific orbitals
+            V_submatrix = orbital_to_submatrix(self.orbitals, Vs, Vp, Vd, Vf)
+            self.orbital_representations.append(V_submatrix)
+
+    def get_representation_matrix(self, operation_idx):
+        """
+        Get the orbital representation matrix for a specific space group operation
+
+        Args:
+            operation_idx: index of the space group operation
+
+        Returns:
+            numpy array: representation matrix for this atom's orbitals
+        """
+        if self.orbital_representations is None:
+            raise ValueError(f"Orbital representations not computed for atom {self.atom_name}")
+
+        if operation_idx >= len(self.orbital_representations):
+            raise IndexError(f"Operation index {operation_idx} out of range")
+
+        return self.orbital_representations[operation_idx]
+
+    def get_sympy_representation_matrix(self, operation_idx):
+        """
+        Get the orbital representation matrix as a sympy Matrix
+
+        Args:
+            operation_idx: index of the space group operation
+
+        Returns:
+            sympy.Matrix: representation matrix for this atom's orbitals
+        """
+        return sp.Matrix(self.get_representation_matrix(operation_idx))
+
+    def __str__(self):
+        """String representation for print()"""
+        orbital_info = f", Orbitals: {self.num_orbitals}" if self.orbitals else ""
+        repr_info = f", Repr: ✓" if self.orbital_representations is not None else ""
+        return (f"Atom: {self.atom_name}, "
+                f"Cell: [{self.n0}, {self.n1}, {self.n2}], "
+                f"Frac: {self.frac_coord}, "
+                f"Cart: {self.cart_coord}"
+                f"{orbital_info}{repr_info}")
+
+    def __repr__(self):
+        """Detailed representation for debugging"""
+        return (f"atomIndex(cell=[{self.n0}, {self.n1}, {self.n2}], "
+                f"frac_coord={self.frac_coord}, "
+                f"atom_name='{self.atom_name}', "
+                f"orbitals={self.num_orbitals})")
+
+    def get_orbital_names(self):
+        """Get list of orbital names for this atom"""
+        return self.orbitals if self.orbitals is not None else []
+
+    def has_orbital(self, orbital_name):
+        """Check if this atom has a specific orbital"""
+        if self.orbitals is None:
+            return False
+        # Handle both '2s' and 's' format
+        orbital_type = orbital_name.lstrip('0123456789')
+        return any(orb.lstrip('0123456789') == orbital_type for orb in self.orbitals)
+
+
+# ==============================================================================
+# Helper functions for atom operations
+# ==============================================================================
 def compute_dist(center_frac, center_cell, dest_frac, basis, search_range, radius):
     """
+    Find all atoms within a radius from a center atom
 
-    :param center_frac:
-    :param center_cell:
-    :param dest_frac:
-    :param basis:
-    :param search_range:
-    :param radius:
-    :return:
+    :param center_frac: Fractional coordinates of center
+    :param center_cell: Cell indices of center
+    :param dest_frac: Fractional coordinates of destination atom type
+    :param basis: Lattice basis vectors
+    :param search_range: Range to search in each direction
+    :param radius: Maximum distance
+    :return: List of [cell, frac_coord] pairs within radius
     """
     f0, f1 = center_frac
     n0, n1 = center_cell
 
     g0, g1 = dest_frac
-    # m0,m1=dest_cell
 
     a0, a1, a2 = basis
 
@@ -436,21 +610,32 @@ def compute_dist(center_frac, center_cell, dest_frac, basis, search_range, radiu
     return rst
 
 
+def frac_to_cartesian(cell, frac_coord, basis):
+    """Convert fractional coordinates to Cartesian"""
+    n0, n1, n2 = cell
+    f0, f1, f2 = frac_coord
+    a0, a1, a2 = basis
+    return (n0 + f0) * a0 + (n1 + f1) * a1 + (n2 + f2) * a2
+
+
+# ==============================================================================
+# Extract atom type information
+# ==============================================================================
 atom_types = []
 fractional_positions = []
 for i, pos in enumerate(parsed_config['atom_positions']):
     type_name = pos["atom_type"]
     frac_pos = pos["fractional_coordinates"]
-    # print(f"type_name={type_name}, frac_pos={frac_pos}")
     atom_types.append(type_name)
     fractional_positions.append(np.array(frac_pos))
 
 # ==============================================================================
-# STEP 7: Partition BB_atoms into equivalent sets under symmetry
+# STEP 7: Find neighboring atoms and partition into equivalence classes
 # ==============================================================================
 print("\n" + "=" * 60)
-print("PARTITIONING BB ATOMS INTO EQUIVALENT SETS")
+print("FINDING NEIGHBORING ATOMS")
 print("=" * 60)
+
 ind0 = 0
 atm0 = atom_types[ind0]
 center_frac0 = (fractional_positions[ind0])[:2]
@@ -458,125 +643,38 @@ center_cell = [0, 0]
 lattice_basis = np.array(parsed_config['lattice_basis'])
 l = 1.05 * np.sqrt(3)
 
+# Find BB neighbors
 neigboring_BB = compute_dist(center_frac0, center_cell, center_frac0, lattice_basis, 7, l)
-print(neigboring_BB)
+print(f"Found {len(neigboring_BB)} BB neighbors")
 
-
-def frac_to_cartesian(cell, frac_coord, basis):
-    n0, n1, n2 = cell
-    f0, f1, f2 = frac_coord
-    a0, a1, a2 = basis
-    return (n0 + f0) * a0 + (n1 + f1) * a1 + (n2 + f2) * a2
-
-
+# Convert to Cartesian for verification
 neigboring_BB_cartesian = []
 for item in neigboring_BB:
     cell, frac_coord = item
     cart_coord = frac_to_cartesian(cell, frac_coord, lattice_basis)
     neigboring_BB_cartesian.append([cell, cart_coord])
 
-for item in neigboring_BB_cartesian:
-    cell, cart_coord = item
-    print(f"cell={cell}, cart_coord={cart_coord}")
-
+# Get space group matrices in Cartesian coordinates
 eps = 1e-8
-
 space_group_bilbao_cart = []
 for item in space_group_representations["space_group_matrices_cartesian"]:
     space_group_bilbao_cart.append(np.array(item))
 
-for i, mat in enumerate(space_group_bilbao_cart):
-    print(f"===========matrix {i}: ")
-    print(f"{mat}")
-
-
-class atomIndex():
-    def __init__(self, cell, frac_coord, atom_name, basis):
-        self.n0 = cell[0]
-        self.n1 = cell[1]
-        self.n2 = cell[2]
-        self.atom_name = atom_name
-        self.frac_coord = frac_coord
-        self.basis = basis
-        a0, a1, a2 = basis
-        f0, f1, f2 = frac_coord
-        cart_coord = (self.n0 + f0) * a0 + (self.n1 + f1) * a1 + (self.n2 + f2) * a2
-        self.cart_coord = cart_coord
-
-    def __str__(self):
-        """String representation for print()"""
-        return (f"Atom: {self.atom_name}, "
-                f"Cell: [{self.n0}, {self.n1}, {self.n2}], "
-                f"Frac: {self.frac_coord}, "
-                f"Cart: {self.cart_coord}")
-
-    def __repr__(self):
-        """Detailed representation for debugging"""
-        return (f"atomIndex(cell=[{self.n0}, {self.n1}, {self.n2}], "
-                f"frac_coord={self.frac_coord}, "
-                f"atom_name='{self.atom_name}')")
-
-
-#############center=B, neighbor=B
+# Create BB_atoms with orbital representations
 BB_atoms = []
 for item in neigboring_BB:
     cell, frac_coord = item
-    atm = atomIndex(cell, frac_coord, "B", lattice_basis)
+    atm = atomIndex(cell, frac_coord, "B", lattice_basis, parsed_config,
+                    repr_s_np, repr_p_np, repr_d_np, repr_f_np)
     BB_atoms.append(atm)
+
 B_center_frac = list(center_frac0) + [0]
-
-B_center_atom = atomIndex([0, 0, 0], B_center_frac, atm0, lattice_basis)
-
-
-def get_next(center_atom, nghb_atom, group_mat):
-    """
-    relocate origin to center_atom, and get symmetry transformed atoms
-    :param center_atom:
-    :param nghb_atom:
-    :param group_mat:
-    :return:
-    """
-    R = group_mat[:, :3]
-    b = group_mat[:, 3]
-    # print(R)
-    # print(b)
-    center_cart_coord = center_atom.cart_coord
-    nghb_cart_coord = nghb_atom.cart_coord
-    diff_vec = nghb_cart_coord - center_cart_coord
-    next_cart_coord = center_cart_coord + R @ diff_vec + b
-    # next_cart_coord=R@nghb_cart_coord+b
-    return next_cart_coord
-
+B_center_atom = atomIndex([0, 0, 0], B_center_frac, atm0, lattice_basis, parsed_config,
+                          repr_s_np, repr_p_np, repr_d_np, repr_f_np)
 
 # ==============================================================================
-# STEP 8: Partition all BB_atoms into equivalent sets
+# Find identity operation
 # ==============================================================================
-
-
-class hopping():
-    def __init__(self, to_atom, from_atom, class_id, operation_idx, rotation_matrix, translation_vector):
-        self.to_atom = to_atom
-        self.from_atom = from_atom
-        self.class_id = class_id
-        self.operation_idx = operation_idx  # Which space group operation transforms root to this hopping
-        self.rotation_matrix = rotation_matrix  # R (3x3 matrix)
-        self.translation_vector = translation_vector  # b (3-vector)
-        self.T = None  # Hopping matrix (to be filled later)
-
-    def conjugate(self):
-        return [deepcopy(self.from_atom), deepcopy(self.to_atom)]
-
-    def __repr__(self):
-        t_status = "T=None" if self.T is None else f"T={self.T.shape if hasattr(self.T, 'shape') else 'set'}"
-        return (f"hopping(from={self.from_atom.atom_name}, to={self.to_atom.atom_name}, "
-                f"class_id={self.class_id}, op={self.operation_idx}, {t_status})")
-
-
-print("\n" + "=" * 60)
-print("PARTITIONING ALL BB_ATOMS INTO EQUIVALENT SETS")
-print("=" * 60)
-
-# Find identity operation index
 identity_idx = None
 for idx, group_mat in enumerate(space_group_bilbao_cart):
     if np.allclose(group_mat[:3, :3], np.eye(3)) and np.allclose(group_mat[:3, 3], 0):
@@ -586,138 +684,66 @@ for idx, group_mat in enumerate(space_group_bilbao_cart):
 
 if identity_idx is None:
     print("WARNING: Identity operation not found in space_group_bilbao_cart!")
+    exit(1)
 
-equivalent_atom_sets_BB = []
-equivalent_hopping_sets_BB = []
-set_counter = 0
+# ==============================================================================
+# Verify atom orbital representations
+# ==============================================================================
+print("\n" + "=" * 80)
+print("VERIFYING ATOM ORBITAL REPRESENTATIONS")
+print("=" * 80)
 
-while len(BB_atoms) > 0:
-    set_counter += 1
-    print(f"\n--- Equivalent Set {set_counter} ---")
-
-    # Take the first atom from remaining BB_atoms as seed
-    seed_atom = BB_atoms[0]
-    print(f"Seed atom: {seed_atom}")
-
-    # Calculate seed atom's distance to center
-    seed_distance = np.linalg.norm(seed_atom.cart_coord - B_center_atom.cart_coord)
-    print(f"Seed distance to center: {seed_distance:.6f}")
-
-    # Dictionary to track which operation generated each equivalent atom
-    # Key: atom index in BB_atoms, Value: (operation index, atom object)
-    equivalent_dict = {}
-
-    # List to store hoppings for this equivalent set
-    current_hopping_set = []
-
-    # First, assign seed atom to identity operation
-    equivalent_dict[0] = (identity_idx, seed_atom)
-
-    # Get identity matrix components
-    identity_matrix = space_group_bilbao_cart[identity_idx]
-    identity_rotation = identity_matrix[:3, :3]
-    identity_translation = identity_matrix[:3, 3]
-
-    # Create hopping for seed atom with identity operation
-    seed_hop = hopping(
-        to_atom=B_center_atom,
-        from_atom=seed_atom,
-        class_id=set_counter - 1,
-        operation_idx=identity_idx,
-        rotation_matrix=identity_rotation,
-        translation_vector=identity_translation
-    )
-    current_hopping_set.append(seed_hop)
-
-    # Apply all space group operations to the seed atom
-    for op_idx, group_mat in enumerate(space_group_bilbao_cart):
-        # Skip identity operation (already handled for seed)
-        if op_idx == identity_idx:
-            continue
-
-        # Check if this operation leaves the center atom invariant
-        center_transformed = get_next(B_center_atom, B_center_atom, group_mat)
-        diff_center = center_transformed - B_center_atom.cart_coord
-
-        if np.linalg.norm(diff_center) > 1e-6:
-            # Skip this operation if it moves the center atom
-            continue
-
-        # Get the transformed coordinate from seed atom
-        next_coord = get_next(B_center_atom, seed_atom, group_mat)
-
-        # Calculate distance of transformed coordinate to center
-        next_distance = np.linalg.norm(next_coord - B_center_atom.cart_coord)
-
-        # Check if distance is equal to seed distance (within tolerance)
-        if abs(next_distance - seed_distance) > 1e-6:
-            # Skip this transformed atom if distance doesn't match
-            continue
-
-        # Check if this coordinate matches any atom in BB_atoms
-        for idx, atm in enumerate(BB_atoms):
-            if idx not in equivalent_dict:  # Skip already found atoms
-                diff = next_coord - atm.cart_coord
-                if np.linalg.norm(diff) < 1e-6:
-                    # Record this atom and which operation generated it
-                    equivalent_dict[idx] = (op_idx, atm)
-
-                    # Extract rotation and translation from group matrix
-                    rotation = group_mat[:3, :3]
-                    translation = group_mat[:3, 3]
-
-                    # Create hopping: from equivalent atom to center
-                    hop = hopping(
-                        to_atom=B_center_atom,
-                        from_atom=atm,
-                        class_id=set_counter - 1,
-                        operation_idx=op_idx,
-                        rotation_matrix=rotation,
-                        translation_vector=translation
-                    )
-                    current_hopping_set.append(hop)
-
-                    print(f"  Operation {op_idx} generates atom {idx}, distance={next_distance:.6f}")
-
-    # Get list of equivalent atom indices
-    equivalent_indices = sorted(equivalent_dict.keys())
-
-    print(f"Found {len(equivalent_indices)} equivalent atoms: indices {equivalent_indices}")
-
-    # Collect the actual atoms for this equivalent set
-    current_atom_set = [BB_atoms[idx] for idx in equivalent_indices]
-    equivalent_atom_sets_BB.append(current_atom_set)
-    equivalent_hopping_sets_BB.append(current_hopping_set)
-
-    # Print details of atoms in this set
-    print("Atoms in this set:")
-    for idx in equivalent_indices:
-        atm = BB_atoms[idx]
-        op_idx, _ = equivalent_dict[idx]
-        dist = np.linalg.norm(atm.cart_coord - B_center_atom.cart_coord)
-        op_str = f"op {op_idx}" + (" (identity)" if op_idx == identity_idx else "")
-        print(f"  Atom {idx} ({op_str}): Cell=[{atm.n0:2d},{atm.n1:2d},{atm.n2:2d}], "
-              f"Frac=[{atm.frac_coord[0]:.4f},{atm.frac_coord[1]:.4f},{atm.frac_coord[2]:.4f}], "
-              f"Dist={dist:.6f}")
-
-    # Remove equivalent atoms from BB_atoms
-    BB_atoms = [atm for i, atm in enumerate(BB_atoms) if i not in equivalent_indices]
-
-    print(f"Remaining BB_atoms: {len(BB_atoms)}")
-
-print("\n" + "=" * 60)
-print("PARTITIONING COMPLETE")
-print("=" * 60)
-print(f"Total number of equivalent sets: {len(equivalent_atom_sets_BB)}")
-print(f"Total number of hopping sets: {len(equivalent_hopping_sets_BB)}")
-
-for j, st in enumerate(equivalent_hopping_sets_BB):
-    print(f"set {j} ********************************************************")
-    for hp in st:
-        print(hp)
+print(f"\nB center atom:")
+print(f"  {B_center_atom}")
+print(f"  Orbitals: {B_center_atom.get_orbital_names()}")
+if B_center_atom.orbital_representations:
+    print(f"  Number of operations: {len(B_center_atom.orbital_representations)}")
+    V_identity = B_center_atom.get_representation_matrix(identity_idx)
+    print(f"  Identity matrix shape: {V_identity.shape}")
+    print(f"  Is identity: {np.allclose(V_identity, np.eye(V_identity.shape[0]))}")
 
 
-# Updated vertex class with children and parent
+# ==============================================================================
+# hopping class
+# ==============================================================================
+class hopping:
+    """
+    Represents a single hopping term between two atoms.
+    """
+
+    def __init__(self, to_atom, from_atom, class_id, operation_idx, rotation_matrix, translation_vector):
+        self.to_atom = to_atom  # Atom object (destination)
+        self.from_atom = from_atom  # Atom object (source)
+        self.class_id = class_id  # Equivalence class identifier
+        self.operation_idx = operation_idx  # Which space group operation transforms parent to this hopping
+        self.rotation_matrix = rotation_matrix  # 3×3 rotation matrix R
+        self.translation_vector = translation_vector  # 3D translation vector b
+        self.distance = None  # Will be computed
+        self.T = None  # Hopping matrix (sympy Matrix)
+        # self.T_full=None
+
+    def conjugate(self):
+        return [deepcopy(self.from_atom), deepcopy(self.to_atom)]
+
+    def compute_distance(self):
+        """
+        Compute the Euclidean distance for this hopping.
+        """
+        pos_to = self.to_atom.cart_coord
+        pos_from = self.from_atom.cart_coord
+
+        # Real space position difference
+        delta_pos = pos_to - pos_from
+
+        self.distance = np.linalg.norm(delta_pos, ord=2)
+
+    def __repr__(self):
+        return (f"hopping(to={self.to_atom.atom_name}, from={self.from_atom.atom_name}, "
+                f"class={self.class_id}, op={self.operation_idx}, "
+                f"distance={self.distance:.4f if self.distance is not None else 'None'})")
+# ==============================================================================
+# vertex class
+# ==============================================================================
 class vertex():
     def __init__(self, hopping, type, identity_idx, parent=None):
         self.hopping = deepcopy(hopping)
@@ -740,96 +766,62 @@ class vertex():
                 f"children={len(self.children)})")
 
 
-# Store all trees (now just storing the root vertices)
-tree_roots = []
-for set_idx, hopping_set in enumerate(equivalent_hopping_sets_BB):
-    print(f"\n--- Building tree for Set {set_idx} ---")
-    print(f"Total hoppings in set: {len(hopping_set)}")
-    # Find the root hopping (identity operation)
-    root_hopping = None
-    child_hoppings = []
-    for hop in hopping_set:
-        if hop.operation_idx == identity_idx:
-            root_hopping = hop
-        else:
-            child_hoppings.append(hop)
-    if root_hopping is None:
-        print(f"WARNING: No identity hopping found in set {set_idx}!")
-        continue
-    print(f"Root hopping: {root_hopping}")
-    print(f"Number of child hoppings: {len(child_hoppings)}")
-    # Create root vertex
-    root_vertex = vertex(hopping=root_hopping, type=None, identity_idx=identity_idx)
-    # Create child vertices and link them to root
-    for hop in child_hoppings:
-        child_type = "linear"
-        child_v = vertex(hopping=hop, type=child_type, identity_idx=identity_idx)
-        # Add this child to the root's children list
-        root_vertex.add_child(child_v)
-    # Store the root (which now contains references to all its children)
-    tree_roots.append(root_vertex)
-    print(f"Tree built: 1 root with {len(root_vertex.children)} children")
-    print(f"  Root: {root_vertex}")
-    for i, child in enumerate(root_vertex.children[:3]):
-        print(f"    Child {i}: {child}")
-    if len(root_vertex.children) > 3:
-        print(f"    ... and {len(root_vertex.children) - 3} more children")
+# ==============================================================================
+# Helper function for symmetry operations
+# ==============================================================================
+def get_next(center_atom, nghb_atom, group_mat):
+    """
+    Relocate origin to center_atom, and get symmetry transformed atoms
+
+    :param center_atom: Center atom object
+    :param nghb_atom: Neighbor atom object
+    :param group_mat: Space group matrix [R|b]
+    :return: Transformed Cartesian coordinate
+    """
+    R = group_mat[:, :3]
+    b = group_mat[:, 3]
+    center_cart_coord = center_atom.cart_coord
+    nghb_cart_coord = nghb_atom.cart_coord
+    diff_vec = nghb_cart_coord - center_cart_coord
+    next_cart_coord = center_cart_coord + R @ diff_vec + b
+    return next_cart_coord
+
 
 # ==============================================================================
-# STEP 9: Partition BN_atoms into equivalent sets under symmetry
+# STEP 8: Partition BB_atoms into equivalent sets under symmetry
 # ==============================================================================
-ind1 = 1
-atm1 = atom_types[ind1]
-# print(f"ind1={ind1}, atm1={atm1}")
-center_frac1 = (fractional_positions[ind1])[:2]
-center_cell = [0, 0]
-lattice_basis = np.array(parsed_config['lattice_basis'])
-l = 1.05 * np.sqrt(3)
-
-neigboring_BN = compute_dist(center_frac0, center_cell, center_frac1, lattice_basis, 7, l)
-neigboring_BN_cartesian = []
-for item in neigboring_BN:
-    cell, frac_coord = item
-    cart_coord = frac_to_cartesian(cell, frac_coord, lattice_basis)
-    neigboring_BN_cartesian.append([cell, cart_coord])
-
-# for item in neigboring_BN_cartesian:
-#     cell, cart_coord=item
-#     print(f"cell={cell}, cart_coord={cart_coord}")
-
-# ==============================================================================
-# STEP 10: Partition all BN_atoms into equivalent sets
-# ==============================================================================
-# Create BN_atoms list (analogous to BB_atoms)
-BN_atoms = []
-for item in neigboring_BN:
-    cell, frac_coord = item
-    atm = atomIndex(cell, frac_coord, "N", lattice_basis)  # N atoms
-    BN_atoms.append(atm)
 print("\n" + "=" * 60)
-print("PARTITIONING ALL BN_ATOMS INTO EQUIVALENT SETS")
+print("PARTITIONING ALL BB_ATOMS INTO EQUIVALENT SETS")
 print("=" * 60)
 
-equivalent_atom_sets_BN = []
-equivalent_hopping_sets_BN = []
+equivalent_atom_sets_BB = []
+equivalent_hopping_sets_BB = []
 set_counter = 0
-while len(BN_atoms) > 0:
+
+while len(BB_atoms) > 0:
     set_counter += 1
     print(f"\n--- Equivalent Set {set_counter} ---")
-    # Take the first atom from remaining BN_atoms as seed
-    seed_atom = BN_atoms[0]
+
+    # Take the first atom from remaining BB_atoms as seed
+    seed_atom = BB_atoms[0]
     print(f"Seed atom: {seed_atom}")
+
     # Calculate seed atom's distance to center
     seed_distance = np.linalg.norm(seed_atom.cart_coord - B_center_atom.cart_coord)
     print(f"Seed distance to center: {seed_distance:.6f}")
+
+    # Dictionary to track which operation generated each equivalent atom
     equivalent_dict = {}
     current_hopping_set = []
+
     # First, assign seed atom to identity operation
     equivalent_dict[0] = (identity_idx, seed_atom)
+
     # Get identity matrix components
     identity_matrix = space_group_bilbao_cart[identity_idx]
     identity_rotation = identity_matrix[:3, :3]
     identity_translation = identity_matrix[:3, 3]
+
     # Create hopping for seed atom with identity operation
     seed_hop = hopping(
         to_atom=B_center_atom,
@@ -840,31 +832,40 @@ while len(BN_atoms) > 0:
         translation_vector=identity_translation
     )
     current_hopping_set.append(seed_hop)
+
     # Apply all space group operations to the seed atom
     for op_idx, group_mat in enumerate(space_group_bilbao_cart):
         # Skip identity operation (already handled for seed)
         if op_idx == identity_idx:
             continue
+
         # Check if this operation leaves the center atom invariant
         center_transformed = get_next(B_center_atom, B_center_atom, group_mat)
         diff_center = center_transformed - B_center_atom.cart_coord
+
         if np.linalg.norm(diff_center) > 1e-6:
             continue
+
         # Get the transformed coordinate from seed atom
         next_coord = get_next(B_center_atom, seed_atom, group_mat)
+
         # Calculate distance of transformed coordinate to center
         next_distance = np.linalg.norm(next_coord - B_center_atom.cart_coord)
+
         # Check if distance is equal to seed distance (within tolerance)
         if abs(next_distance - seed_distance) > 1e-6:
             continue
-        # Check if this coordinate matches any atom in BN_atoms
-        for idx, atm in enumerate(BN_atoms):
+
+        # Check if this coordinate matches any atom in BB_atoms
+        for idx, atm in enumerate(BB_atoms):
             if idx not in equivalent_dict:
                 diff = next_coord - atm.cart_coord
                 if np.linalg.norm(diff) < 1e-6:
                     equivalent_dict[idx] = (op_idx, atm)
+
                     rotation = group_mat[:3, :3]
                     translation = group_mat[:3, 3]
+
                     hop = hopping(
                         to_atom=B_center_atom,
                         from_atom=atm,
@@ -874,195 +875,198 @@ while len(BN_atoms) > 0:
                         translation_vector=translation
                     )
                     current_hopping_set.append(hop)
-                    print(f"  Operation {op_idx} generates atom {idx}, distance={next_distance:.6f}")
 
     equivalent_indices = sorted(equivalent_dict.keys())
-    print(f"Found {len(equivalent_indices)} equivalent atoms: indices {equivalent_indices}")
-    current_atom_set = [BN_atoms[idx] for idx in equivalent_indices]
-    equivalent_atom_sets_BN.append(current_atom_set)
-    equivalent_hopping_sets_BN.append(current_hopping_set)
+    print(f"Found {len(equivalent_indices)} equivalent atoms")
 
-    # Remove equivalent atoms from BN_atoms
-    BN_atoms = [atm for i, atm in enumerate(BN_atoms) if i not in equivalent_indices]
-    print(f"Remaining BN_atoms: {len(BN_atoms)}")
+    current_atom_set = [BB_atoms[idx] for idx in equivalent_indices]
+    equivalent_atom_sets_BB.append(current_atom_set)
+    equivalent_hopping_sets_BB.append(current_hopping_set)
 
-print("\n" + "=" * 60)
-print("BN PARTITIONING COMPLETE")
-print("=" * 60)
-print(f"Total number of BN equivalent sets: {len(equivalent_atom_sets_BN)}")
+    # Remove equivalent atoms from BB_atoms
+    BB_atoms = [atm for i, atm in enumerate(BB_atoms) if i not in equivalent_indices]
 
-# for j, st in enumerate(equivalent_atom_sets_BN):
-#     print(f"equivalent class {j}: ----------------------------------------------")
-#     for item in st:
-#         print(item)
-
+print(f"\nTotal BB equivalent sets: {len(equivalent_atom_sets_BB)}")
 
 # ==============================================================================
-# STEP 11: Build trees for BN hoppings
+# Build trees for BB hoppings
 # ==============================================================================
-print("\n" + "=" * 60)
-print("BUILDING TREES FOR BN HOPPINGS")
-print("=" * 60)
-
-# Store all BN trees (root vertices)
-tree_roots_BN = []
-
-for set_idx, hopping_set in enumerate(equivalent_hopping_sets_BN):
-    print(f"\n--- Building tree for BN Set {set_idx} ---")
-    print(f"Total hoppings in set: {len(hopping_set)}")
+tree_roots = []
+for set_idx, hopping_set in enumerate(equivalent_hopping_sets_BB):
     # Find the root hopping (identity operation)
     root_hopping = None
     child_hoppings = []
+
     for hop in hopping_set:
         if hop.operation_idx == identity_idx:
             root_hopping = hop
         else:
             child_hoppings.append(hop)
+
     if root_hopping is None:
-        print(f"WARNING: No identity hopping found in BN set {set_idx}!")
+        print(f"WARNING: No identity hopping found in set {set_idx}!")
         continue
 
-    print(f"Root hopping: {root_hopping}")
-    print(f"Number of child hoppings: {len(child_hoppings)}")
     # Create root vertex
     root_vertex = vertex(hopping=root_hopping, type=None, identity_idx=identity_idx)
+
     # Create child vertices and link them to root
     for hop in child_hoppings:
-        child_type = "linear"
-        child_v = vertex(hopping=hop, type=child_type, identity_idx=identity_idx)
-        # Add this child to the root's children list
+        child_v = vertex(hopping=hop, type="linear", identity_idx=identity_idx)
         root_vertex.add_child(child_v)
-    # Store the root (which now contains references to all its children)
-    tree_roots_BN.append(root_vertex)
-    print(f"Tree built: 1 root with {len(root_vertex.children)} children")
-    print(f"  Root: {root_vertex}")
-    for i, child in enumerate(root_vertex.children[:3]):
-        print(f"    Child {i}: {child}")
-    if len(root_vertex.children) > 3:
-        print(f"    ... and {len(root_vertex.children) - 3} more children")
 
-
-def print_tree(root, prefix="", is_last=True, show_details=True):
-    """
-    Print a tree structure in a visual format
-
-    Args:
-        root: vertex object (root of tree or subtree)
-        prefix: string prefix for indentation
-        is_last: whether this is the last child at this level
-        show_details: whether to show detailed hopping information
-    """
-    # Determine the connector symbol
-    connector = "└── " if is_last else "├── "
-
-    # Print current node
-    if root.is_root:
-        node_label = "ROOT"
-        style = "╔═══"
-    else:
-        node_label = f"CHILD ({root.type})"
-        style = connector
-
-    # Build the node description
-    hop = root.hopping
-    from_cell = [hop.from_atom.n0, hop.from_atom.n1, hop.from_atom.n2]
-    from_frac = hop.from_atom.frac_coord
-    to_atom_name = hop.to_atom.atom_name
-    from_atom_name = hop.from_atom.atom_name
-
-    distance = np.linalg.norm(hop.from_atom.cart_coord - hop.to_atom.cart_coord)
-
-    if show_details:
-        node_desc = (f"{node_label} | Op={hop.operation_idx:2d} | "
-                     f"{to_atom_name}←{from_atom_name} | "
-                     f"Cell=[{from_cell[0]:2d},{from_cell[1]:2d},{from_cell[2]:2d}] | "
-                     f"Dist={distance:.4f}")
-    else:
-        node_desc = f"{node_label} | Op={hop.operation_idx:2d}"
-
-    print(f"{prefix}{style}{node_desc}")
-
-    # Print children
-    if root.children:
-        # Update prefix for children
-        if root.is_root:
-            new_prefix = prefix + "    "
-        else:
-            extension = "    " if is_last else "│   "
-            new_prefix = prefix + extension
-
-        # Print each child
-        for i, child in enumerate(root.children):
-            is_last_child = (i == len(root.children) - 1)
-            print_tree(child, new_prefix, is_last_child, show_details)
-
+    tree_roots.append(root_vertex)
 
 # ==============================================================================
-# STEP 12: Partition NB_atoms into equivalent sets under symmetry
+# STEP 9: Process BN atoms (Boron center, Nitrogen neighbors)
 # ==============================================================================
-
 ind1 = 1
 atm1 = atom_types[ind1]
 center_frac1 = (fractional_positions[ind1])[:2]
-center_cell = [0, 0]
-lattice_basis = np.array(parsed_config['lattice_basis'])
-l = 1.05 * np.sqrt(3)
 
-ind0 = 0
-atm0 = atom_types[ind0]
-center_frac0 = (fractional_positions[ind0])[:2]
+neigboring_BN = compute_dist(center_frac0, center_cell, center_frac1, lattice_basis, 7, l)
 
+BN_atoms = []
+for item in neigboring_BN:
+    cell, frac_coord = item
+    atm = atomIndex(cell, frac_coord, "N", lattice_basis, parsed_config,
+                    repr_s_np, repr_p_np, repr_d_np, repr_f_np)
+    BN_atoms.append(atm)
+
+print(f"\nFound {len(neigboring_BN)} BN neighbors")
+
+# Partition BN atoms
+equivalent_atom_sets_BN = []
+equivalent_hopping_sets_BN = []
+set_counter = 0
+
+while len(BN_atoms) > 0:
+    set_counter += 1
+    seed_atom = BN_atoms[0]
+    seed_distance = np.linalg.norm(seed_atom.cart_coord - B_center_atom.cart_coord)
+
+    equivalent_dict = {}
+    current_hopping_set = []
+
+    equivalent_dict[0] = (identity_idx, seed_atom)
+
+    identity_matrix = space_group_bilbao_cart[identity_idx]
+    identity_rotation = identity_matrix[:3, :3]
+    identity_translation = identity_matrix[:3, 3]
+
+    seed_hop = hopping(
+        to_atom=B_center_atom,
+        from_atom=seed_atom,
+        class_id=set_counter - 1,
+        operation_idx=identity_idx,
+        rotation_matrix=identity_rotation,
+        translation_vector=identity_translation
+    )
+    current_hopping_set.append(seed_hop)
+
+    for op_idx, group_mat in enumerate(space_group_bilbao_cart):
+        if op_idx == identity_idx:
+            continue
+
+        center_transformed = get_next(B_center_atom, B_center_atom, group_mat)
+        diff_center = center_transformed - B_center_atom.cart_coord
+
+        if np.linalg.norm(diff_center) > 1e-6:
+            continue
+
+        next_coord = get_next(B_center_atom, seed_atom, group_mat)
+        next_distance = np.linalg.norm(next_coord - B_center_atom.cart_coord)
+
+        if abs(next_distance - seed_distance) > 1e-6:
+            continue
+
+        for idx, atm in enumerate(BN_atoms):
+            if idx not in equivalent_dict:
+                diff = next_coord - atm.cart_coord
+                if np.linalg.norm(diff) < 1e-6:
+                    equivalent_dict[idx] = (op_idx, atm)
+                    rotation = group_mat[:3, :3]
+                    translation = group_mat[:3, 3]
+
+                    hop = hopping(
+                        to_atom=B_center_atom,
+                        from_atom=atm,
+                        class_id=set_counter - 1,
+                        operation_idx=op_idx,
+                        rotation_matrix=rotation,
+                        translation_vector=translation
+                    )
+                    current_hopping_set.append(hop)
+
+    equivalent_indices = sorted(equivalent_dict.keys())
+    current_atom_set = [BN_atoms[idx] for idx in equivalent_indices]
+    equivalent_atom_sets_BN.append(current_atom_set)
+    equivalent_hopping_sets_BN.append(current_hopping_set)
+
+    BN_atoms = [atm for i, atm in enumerate(BN_atoms) if i not in equivalent_indices]
+
+print(f"Total BN equivalent sets: {len(equivalent_atom_sets_BN)}")
+
+# Build trees for BN hoppings
+tree_roots_BN = []
+for set_idx, hopping_set in enumerate(equivalent_hopping_sets_BN):
+    root_hopping = None
+    child_hoppings = []
+
+    for hop in hopping_set:
+        if hop.operation_idx == identity_idx:
+            root_hopping = hop
+        else:
+            child_hoppings.append(hop)
+
+    if root_hopping is None:
+        continue
+
+    root_vertex = vertex(hopping=root_hopping, type=None, identity_idx=identity_idx)
+
+    for hop in child_hoppings:
+        child_v = vertex(hopping=hop, type="linear", identity_idx=identity_idx)
+        root_vertex.add_child(child_v)
+
+    tree_roots_BN.append(root_vertex)
+
+# ==============================================================================
+# STEP 10: Process NB atoms (Nitrogen center, Boron neighbors)
+# ==============================================================================
 neigboring_NB = compute_dist(center_frac1, center_cell, center_frac0, lattice_basis, 7, l)
 
-neigboring_NB_cartesian = []
-for item in neigboring_NB:
-    cell, frac_coord = item
-    cart_coord = frac_to_cartesian(cell, frac_coord, lattice_basis)
-    neigboring_NB_cartesian.append([cell, cart_coord])
-
-# Create NB_atoms list (Nitrogen center, Boron neighbors)
 NB_atoms = []
 for item in neigboring_NB:
     cell, frac_coord = item
-    atm = atomIndex(cell, frac_coord, "B", lattice_basis)  # B atoms
+    atm = atomIndex(cell, frac_coord, "B", lattice_basis, parsed_config,
+                    repr_s_np, repr_p_np, repr_d_np, repr_f_np)
     NB_atoms.append(atm)
 
-# Create N center atom
 N_center_frac = list(center_frac1) + [0]
-N_center_atom = atomIndex([0, 0, 0], N_center_frac, atm1, lattice_basis)
+N_center_atom = atomIndex([0, 0, 0], N_center_frac, atm1, lattice_basis, parsed_config,
+                          repr_s_np, repr_p_np, repr_d_np, repr_f_np)
 
-print("\n" + "=" * 60)
-print("PARTITIONING ALL NB_ATOMS INTO EQUIVALENT SETS")
-print("=" * 60)
+print(f"\nFound {len(neigboring_NB)} NB neighbors")
 
+# Partition NB atoms
 equivalent_atom_sets_NB = []
 equivalent_hopping_sets_NB = []
 set_counter = 0
 
 while len(NB_atoms) > 0:
     set_counter += 1
-    print(f"\n--- Equivalent Set {set_counter} ---")
-
-    # Take the first atom from remaining NB_atoms as seed
     seed_atom = NB_atoms[0]
-    print(f"Seed atom: {seed_atom}")
-
-    # Calculate seed atom's distance to center (N atom)
     seed_distance = np.linalg.norm(seed_atom.cart_coord - N_center_atom.cart_coord)
-    print(f"Seed distance to center: {seed_distance:.6f}")
 
     equivalent_dict = {}
     current_hopping_set = []
 
-    # First, assign seed atom to identity operation
     equivalent_dict[0] = (identity_idx, seed_atom)
 
-    # Get identity matrix components
     identity_matrix = space_group_bilbao_cart[identity_idx]
     identity_rotation = identity_matrix[:3, :3]
     identity_translation = identity_matrix[:3, 3]
 
-    # Create hopping for seed atom with identity operation
     seed_hop = hopping(
         to_atom=N_center_atom,
         from_atom=seed_atom,
@@ -1073,44 +1077,30 @@ while len(NB_atoms) > 0:
     )
     current_hopping_set.append(seed_hop)
 
-    # Apply all space group operations to the seed atom
     for op_idx, group_mat in enumerate(space_group_bilbao_cart):
-        # Skip identity operation (already handled for seed)
         if op_idx == identity_idx:
             continue
 
-        # Check if this operation leaves the center atom (N) invariant
         center_transformed = get_next(N_center_atom, N_center_atom, group_mat)
         diff_center = center_transformed - N_center_atom.cart_coord
 
         if np.linalg.norm(diff_center) > 1e-6:
-            # Skip this operation if it moves the center atom
             continue
 
-        # Get the transformed coordinate from seed atom
         next_coord = get_next(N_center_atom, seed_atom, group_mat)
-
-        # Calculate distance of transformed coordinate to center
         next_distance = np.linalg.norm(next_coord - N_center_atom.cart_coord)
 
-        # Check if distance is equal to seed distance (within tolerance)
         if abs(next_distance - seed_distance) > 1e-6:
-            # Skip this transformed atom if distance doesn't match
             continue
 
-        # Check if this coordinate matches any atom in NB_atoms
         for idx, atm in enumerate(NB_atoms):
-            if idx not in equivalent_dict:  # Skip already found atoms
+            if idx not in equivalent_dict:
                 diff = next_coord - atm.cart_coord
                 if np.linalg.norm(diff) < 1e-6:
-                    # Record this atom and which operation generated it
                     equivalent_dict[idx] = (op_idx, atm)
-
-                    # Extract rotation and translation from group matrix
                     rotation = group_mat[:3, :3]
                     translation = group_mat[:3, 3]
 
-                    # Create hopping: from equivalent atom to center
                     hop = hopping(
                         to_atom=N_center_atom,
                         from_atom=atm,
@@ -1121,687 +1111,365 @@ while len(NB_atoms) > 0:
                     )
                     current_hopping_set.append(hop)
 
-                    print(f"  Operation {op_idx} generates atom {idx}, distance={next_distance:.6f}")
-
-    # Get list of equivalent atom indices
     equivalent_indices = sorted(equivalent_dict.keys())
-
-    print(f"Found {len(equivalent_indices)} equivalent atoms: indices {equivalent_indices}")
-
-    # Collect the actual atoms for this equivalent set
     current_atom_set = [NB_atoms[idx] for idx in equivalent_indices]
     equivalent_atom_sets_NB.append(current_atom_set)
     equivalent_hopping_sets_NB.append(current_hopping_set)
 
-    # Print details of atoms in this set
-    print("Atoms in this set:")
-    for idx in equivalent_indices:
-        atm = NB_atoms[idx]
-        op_idx, _ = equivalent_dict[idx]
-        dist = np.linalg.norm(atm.cart_coord - N_center_atom.cart_coord)
-        op_str = f"op {op_idx}" + (" (identity)" if op_idx == identity_idx else "")
-        print(f"  Atom {idx} ({op_str}): Cell=[{atm.n0:2d},{atm.n1:2d},{atm.n2:2d}], "
-              f"Frac=[{atm.frac_coord[0]:.4f},{atm.frac_coord[1]:.4f},{atm.frac_coord[2]:.4f}], "
-              f"Dist={dist:.6f}")
-
-    # Remove equivalent atoms from NB_atoms
     NB_atoms = [atm for i, atm in enumerate(NB_atoms) if i not in equivalent_indices]
 
-    print(f"Remaining NB_atoms: {len(NB_atoms)}")
+print(f"Total NB equivalent sets: {len(equivalent_atom_sets_NB)}")
 
-print("\n" + "=" * 60)
-print("NB PARTITIONING COMPLETE")
-print("=" * 60)
-print(f"Total number of NB equivalent sets: {len(equivalent_atom_sets_NB)}")
-
-# ==============================================================================
-# STEP 13: Build trees for NB hoppings
-# ==============================================================================
-print("\n" + "=" * 60)
-print("BUILDING TREES FOR NB HOPPINGS")
-print("=" * 60)
-
-# Store all NB trees (root vertices)
+# Build trees for NB hoppings
 tree_roots_NB = []
 for set_idx, hopping_set in enumerate(equivalent_hopping_sets_NB):
-    print(f"\n--- Building tree for NB Set {set_idx} ---")
-    print(f"Total hoppings in set: {len(hopping_set)}")
-    # Find the root hopping (identity operation)
     root_hopping = None
     child_hoppings = []
+
     for hop in hopping_set:
         if hop.operation_idx == identity_idx:
             root_hopping = hop
         else:
             child_hoppings.append(hop)
+
     if root_hopping is None:
-        print(f"WARNING: No identity hopping found in NB set {set_idx}!")
         continue
-    print(f"Root hopping: {root_hopping}")
-    print(f"Number of child hoppings: {len(child_hoppings)}")
-    # Create root vertex
+
     root_vertex = vertex(hopping=root_hopping, type=None, identity_idx=identity_idx)
-    # Create child vertices and link them to root
+
     for hop in child_hoppings:
-        child_type = "linear"
-        child_v = vertex(hopping=hop, type=child_type, identity_idx=identity_idx)
-        # Add this child to the root's children list
+        child_v = vertex(hopping=hop, type="linear", identity_idx=identity_idx)
         root_vertex.add_child(child_v)
-    # Store the root (which now contains references to all its children)
+
     tree_roots_NB.append(root_vertex)
-    print(f"Tree built: 1 root with {len(root_vertex.children)} children")
-    print(f"  Root: {root_vertex}")
-    for i, child in enumerate(root_vertex.children[:3]):
-        print(f"    Child {i}: {child}")
-    if len(root_vertex.children) > 3:
-        print(f"    ... and {len(root_vertex.children) - 3} more children")
 
 # ==============================================================================
-# STEP 14: Print tree structures for BB hoppings
+# STEP 11: Process NN atoms (Nitrogen center, Nitrogen neighbors)
 # ==============================================================================
-print("\n" + "=" * 80)
-print("BB HOPPING TREE STRUCTURES")
-print("=" * 80)
+neigboring_NN = compute_dist(center_frac1, center_cell, center_frac1, lattice_basis, 7, l)
 
-# Print all BB trees
-for set_idx, root in enumerate(tree_roots):
-    print(f"\n{'─' * 80}")
-    print(f"EQUIVALENCE CLASS {set_idx} (BB: Boron center, Boron neighbors)")
-    print(f"{'─' * 80}")
-    print(f"Total nodes: {1 + len(root.children)} (1 root + {len(root.children)} children)")
+NN_atoms = []
+for item in neigboring_NN:
+    cell, frac_coord = item
+    atm = atomIndex(cell, frac_coord, "N", lattice_basis, parsed_config,
+                    repr_s_np, repr_p_np, repr_d_np, repr_f_np)
+    NN_atoms.append(atm)
 
-    # Get distance for this equivalence class
-    distance = np.linalg.norm(root.hopping.from_atom.cart_coord - root.hopping.to_atom.cart_coord)
-    print(f"Distance to center: {distance:.6f}")
-    print()
+print(f"\nFound {len(neigboring_NN)} NN neighbors")
 
-    print_tree(root, prefix="", is_last=True, show_details=True)
+# Partition NN atoms
+equivalent_atom_sets_NN = []
+equivalent_hopping_sets_NN = []
+set_counter = 0
+
+while len(NN_atoms) > 0:
+    set_counter += 1
+    seed_atom = NN_atoms[0]
+    seed_distance = np.linalg.norm(seed_atom.cart_coord - N_center_atom.cart_coord)
+
+    equivalent_dict = {}
+    current_hopping_set = []
+
+    equivalent_dict[0] = (identity_idx, seed_atom)
+
+    identity_matrix = space_group_bilbao_cart[identity_idx]
+    identity_rotation = identity_matrix[:3, :3]
+    identity_translation = identity_matrix[:3, 3]
+
+    seed_hop = hopping(
+        to_atom=N_center_atom,
+        from_atom=seed_atom,
+        class_id=set_counter - 1,
+        operation_idx=identity_idx,
+        rotation_matrix=identity_rotation,
+        translation_vector=identity_translation
+    )
+    current_hopping_set.append(seed_hop)
+
+    for op_idx, group_mat in enumerate(space_group_bilbao_cart):
+        if op_idx == identity_idx:
+            continue
+
+        center_transformed = get_next(N_center_atom, N_center_atom, group_mat)
+        diff_center = center_transformed - N_center_atom.cart_coord
+
+        if np.linalg.norm(diff_center) > 1e-6:
+            continue
+
+        next_coord = get_next(N_center_atom, seed_atom, group_mat)
+        next_distance = np.linalg.norm(next_coord - N_center_atom.cart_coord)
+
+        if abs(next_distance - seed_distance) > 1e-6:
+            continue
+
+        for idx, atm in enumerate(NN_atoms):
+            if idx not in equivalent_dict:
+                diff = next_coord - atm.cart_coord
+                if np.linalg.norm(diff) < 1e-6:
+                    equivalent_dict[idx] = (op_idx, atm)
+                    rotation = group_mat[:3, :3]
+                    translation = group_mat[:3, 3]
+
+                    hop = hopping(
+                        to_atom=N_center_atom,
+                        from_atom=atm,
+                        class_id=set_counter - 1,
+                        operation_idx=op_idx,
+                        rotation_matrix=rotation,
+                        translation_vector=translation
+                    )
+                    current_hopping_set.append(hop)
+
+    equivalent_indices = sorted(equivalent_dict.keys())
+    current_atom_set = [NN_atoms[idx] for idx in equivalent_indices]
+    equivalent_atom_sets_NN.append(current_atom_set)
+    equivalent_hopping_sets_NN.append(current_hopping_set)
+
+    NN_atoms = [atm for i, atm in enumerate(NN_atoms) if i not in equivalent_indices]
+
+print(f"Total NN equivalent sets: {len(equivalent_atom_sets_NN)}")
+
+# Build trees for NN hoppings
+tree_roots_NN = []
+for set_idx, hopping_set in enumerate(equivalent_hopping_sets_NN):
+    root_hopping = None
+    child_hoppings = []
+
+    for hop in hopping_set:
+        if hop.operation_idx == identity_idx:
+            root_hopping = hop
+        else:
+            child_hoppings.append(hop)
+
+    if root_hopping is None:
+        continue
+
+    root_vertex = vertex(hopping=root_hopping, type=None, identity_idx=identity_idx)
+
+    for hop in child_hoppings:
+        child_v = vertex(hopping=hop, type="linear", identity_idx=identity_idx)
+        root_vertex.add_child(child_v)
+
+    tree_roots_NN.append(root_vertex)
+
 
 # ==============================================================================
-# STEP 15: Print tree structures for BN hoppings
-# ==============================================================================
-print("\n\n" + "=" * 80)
-print("BN HOPPING TREE STRUCTURES")
-print("=" * 80)
-
-# Print all BN trees
-for set_idx, root in enumerate(tree_roots_BN):
-    print(f"\n{'─' * 80}")
-    print(f"EQUIVALENCE CLASS {set_idx} (BN: Boron center, Nitrogen neighbors)")
-    print(f"{'─' * 80}")
-    print(f"Total nodes: {1 + len(root.children)} (1 root + {len(root.children)} children)")
-
-    # Get distance for this equivalence class
-    distance = np.linalg.norm(root.hopping.from_atom.cart_coord - root.hopping.to_atom.cart_coord)
-    print(f"Distance to center: {distance:.6f}")
-    print()
-
-    print_tree(root, prefix="", is_last=True, show_details=True)
-
-# ==============================================================================
-# STEP 16: Print tree structures for NB hoppings
-# ==============================================================================
-print("\n\n" + "=" * 80)
-print("NB HOPPING TREE STRUCTURES")
-print("=" * 80)
-
-# Print all NB trees
-for set_idx, root in enumerate(tree_roots_NB):
-    print(f"\n{'─' * 80}")
-    print(f"EQUIVALENCE CLASS {set_idx} (NB: Nitrogen center, Boron neighbors)")
-    print(f"{'─' * 80}")
-    print(f"Total nodes: {1 + len(root.children)} (1 root + {len(root.children)} children)")
-
-    # Get distance for this equivalence class
-    distance = np.linalg.norm(root.hopping.from_atom.cart_coord - root.hopping.to_atom.cart_coord)
-    print(f"Distance to center: {distance:.6f}")
-    print()
-
-    print_tree(root, prefix="", is_last=True, show_details=True)
-
-
-# ==============================================================================
-# STEP 17: find hermitian relation between BN and NB
+# STEP 12: Check hermitian conjugate relations between BN and NB
 # ==============================================================================
 def check_hermitian(hopping1, hopping2):
+    """Check if hopping2 is the Hermitian conjugate of hopping1"""
     to_atom1 = hopping1.to_atom
     from_atom1 = hopping1.from_atom
 
     to_atom2c, from_atom2c = hopping2.conjugate()
+
     # Get lattice basis vectors
     a0, a1, a2 = lattice_basis
+
     # Iterate through all space group operations
     for op_idx, group_mat in enumerate(space_group_bilbao_cart):
-        R = group_mat[:3, :3]  # Rotation matrix
-        b = group_mat[:3, 3]  # Translation vector
-        # Transform to_atom1 and from_atom1
+        R = group_mat[:3, :3]
+        b = group_mat[:3, 3]
+
+        # Transform atoms
         to_atom1_transformed_cart_coord = R @ to_atom1.cart_coord + b
         from_atom1_transformed_cart_coord = R @ from_atom1.cart_coord + b
-        # Check if there exist integers n0, n1, n2 such that:
-        # to_atom1_transformed_cart_coord + n0*a0 + n1*a1 + n2*a2 = to_atom2c.cart_coord
-        # from_atom1_transformed_cart_coord + n0*a0 + n1*a1 + n2*a2 = from_atom2c.cart_coord
-        # Compute the difference vectors
+
+        # Compute differences
         diff_to = to_atom2c.cart_coord - to_atom1_transformed_cart_coord
         diff_from = from_atom2c.cart_coord - from_atom1_transformed_cart_coord
+
         # Check if diff_to and diff_from are the same lattice vector
         if np.linalg.norm(diff_to - diff_from) < 1e-6:
-            # They differ by the same lattice vector, now check if it's an integer combination
-            # Solve: n0*a0 + n1*a1 + n2*a2 = diff_to
-            # This is: [a0 a1 a2] @ [n0, n1, n2]^T = diff_to
             lattice_matrix = np.column_stack([a0, a1, a2])
             try:
-                # Solve for [n0, n1, n2]
                 n_vector = np.linalg.solve(lattice_matrix, diff_to)
-                # Check if n_vector contains integers (within tolerance)
                 n_rounded = np.round(n_vector)
                 if np.allclose(n_vector, n_rounded, atol=1e-6):
-                    # Found a valid Hermitian conjugate relationship
                     return True, op_idx
             except np.linalg.LinAlgError:
-                # Singular matrix, skip this operation
                 continue
+
     return False, None
 
 
 print("\n" + "=" * 80)
 print("GROUPING BN AND NB ROOTS BY HERMITIAN CONJUGATE RELATIONS")
 print("=" * 80)
-# Track which roots have been matched
+
 nb_matched = set()
 bn_matched = set()
-
-# List to store grouped roots
 hermitian_groups = []
 independent_groups = []
 
-# For each NB root, try to find its Hermitian conjugate in BN roots
 for nb_idx, nb_root in enumerate(tree_roots_NB):
     if nb_idx in nb_matched:
         continue
+
     found_match = False
     for bn_idx, bn_root in enumerate(tree_roots_BN):
         if bn_idx in bn_matched:
             continue
+
         exists, op_idx = check_hermitian(bn_root.hopping, nb_root.hopping)
         if exists:
-            # Found a matching pair - bn_root first, nb_root second
             hermitian_groups.append([bn_root, nb_root, op_idx])
             nb_matched.add(nb_idx)
             bn_matched.add(bn_idx)
-            print(f"Group {len(hermitian_groups) - 1}: BN root {bn_idx} to NB root {nb_idx} (op: {op_idx})")
-
             found_match = True
             break
+
     if not found_match:
-        # No match found, put NB root alone
         independent_groups.append([nb_root])
         nb_matched.add(nb_idx)
 
-# Process hermitian groups - add root2 as child of root1
+# Process hermitian groups - add NB root as hermitian child of BN root
 for bn_root, nb_root, op_idx in hermitian_groups:
-    # Add nb_root as child of bn_root
     bn_root.children.append(nb_root)
-
-    # Update nb_root properties
     nb_root.type = "hermitian"
     nb_root.is_root = False
     nb_root.parent = bn_root
     nb_root.hopping.operation_idx = op_idx
 
-    # Update the root's hopping operation_idx if not already set
-    if bn_root.hopping.operation_idx is None:
-        # Find the operation that maps bn_root to itself (identity-like operation)
-        # This should already be set from the symmetry tree building, but just in case
-        pass
-
-print(f"\nProcessed {len(hermitian_groups)} hermitian pairs")
-print(f"Added {len(hermitian_groups)} NB roots as hermitian children of BN roots")
-
-# Print verification
-print("\n" + "─" * 80)
-print("VERIFICATION OF HERMITIAN RELATIONSHIPS")
-print("─" * 80)
-for idx, (bn_root, nb_root, op_idx) in enumerate(hermitian_groups):
-    print(f"\nHermitian pair {idx}:")
-    print(f"  BN root (parent): operation {bn_root.hopping.operation_idx}, {len(bn_root.children)} children")
-    print(
-        f"  NB root (child): operation {nb_root.hopping.operation_idx}, is_root={nb_root.is_root}, type={nb_root.type}")
-    print(f"  Hermitian operation: {op_idx}")
+print(f"Processed {len(hermitian_groups)} hermitian pairs")
 
 # ==============================================================================
-# STEP 18: Partition NN_atoms into equivalent sets under symmetry
+# STEP 13: Collect all roots and sort by distance
 # ==============================================================================
-ind1 = 1
-atm1 = atom_types[ind1]
-# print(f"ind1={ind1}, atm1={atm1}")
-center_frac1 = (fractional_positions[ind1])[:2]
-center_cell = [0, 0]
-lattice_basis = np.array(parsed_config['lattice_basis'])
-l = 1.05 * np.sqrt(3)
-
-neigboring_NN = compute_dist(center_frac1, center_cell, center_frac1, lattice_basis, 7, l)
-neigboring_NN_cartesian = []
-for item in neigboring_NN:
-    cell, frac_coord = item
-    cart_coord = frac_to_cartesian(cell, frac_coord, lattice_basis)
-    neigboring_NN_cartesian.append([cell, cart_coord])
-
-# for item in neigboring_BN_cartesian:
-#     cell, cart_coord=item
-#     print(f"cell={cell}, cart_coord={cart_coord}")
-# ==============================================================================
-# STEP 19: Partition all NN_atoms into equivalent sets
-# ==============================================================================
-NN_atoms = []
-for item in neigboring_NN:
-    cell, frac_coord = item
-    atm = atomIndex(cell, frac_coord, "N", lattice_basis)  # N atoms
-    NN_atoms.append(atm)
-
-equivalent_atom_sets_NN = []
-equivalent_hopping_sets_NN = []
-set_counter = 0
-while len(NN_atoms) > 0:
-    set_counter += 1
-    print(f"\n--- Equivalent Set {set_counter} ---")
-    # Take the first atom from remaining NN_atoms as seed
-    seed_atom = NN_atoms[0]
-    print(f"Seed atom: {seed_atom}")
-    # Calculate seed atom's distance to center (N atom)
-    seed_distance = np.linalg.norm(seed_atom.cart_coord - N_center_atom.cart_coord)
-    print(f"Seed distance to center: {seed_distance:.6f}")
-    equivalent_dict = {}
-    current_hopping_set = []
-    # First, assign seed atom to identity operation
-    equivalent_dict[0] = (identity_idx, seed_atom)
-    # Get identity matrix components
-    identity_matrix = space_group_bilbao_cart[identity_idx]
-    identity_rotation = identity_matrix[:3, :3]
-    identity_translation = identity_matrix[:3, 3]
-    # Create hopping for seed atom with identity operation
-    seed_hop = hopping(
-        to_atom=N_center_atom,
-        from_atom=seed_atom,
-        class_id=set_counter - 1,
-        operation_idx=identity_idx,
-        rotation_matrix=identity_rotation,
-        translation_vector=identity_translation
-    )
-    current_hopping_set.append(seed_hop)
-    # Apply all space group operations to the seed atom
-    for op_idx, group_mat in enumerate(space_group_bilbao_cart):
-        # Skip identity operation (already handled for seed)
-        if op_idx == identity_idx:
-            continue
-        # Check if this operation leaves the center atom (N) invariant
-        center_transformed = get_next(N_center_atom, N_center_atom, group_mat)
-        diff_center = center_transformed - N_center_atom.cart_coord
-        if np.linalg.norm(diff_center) > 1e-6:
-            # Skip this operation if it moves the center atom
-            continue
-        # Get the transformed coordinate from seed atom
-        next_coord = get_next(N_center_atom, seed_atom, group_mat)
-        # Calculate distance of transformed coordinate to center
-        next_distance = np.linalg.norm(next_coord - N_center_atom.cart_coord)
-        # Check if distance is equal to seed distance (within tolerance)
-        if abs(next_distance - seed_distance) > 1e-6:
-            # Skip this transformed atom if distance doesn't match
-            continue
-        # Check if this coordinate matches any atom in NN_atoms
-        for idx, atm in enumerate(NN_atoms):
-            if idx not in equivalent_dict:  # Skip already found atoms
-                diff = next_coord - atm.cart_coord
-                if np.linalg.norm(diff) < 1e-6:
-                    # Record this atom and which operation generated it
-                    equivalent_dict[idx] = (op_idx, atm)
-                    # Extract rotation and translation from group matrix
-                    rotation = group_mat[:3, :3]
-                    translation = group_mat[:3, 3]
-                    # Create hopping: from equivalent atom to center
-                    hop = hopping(
-                        to_atom=N_center_atom,
-                        from_atom=atm,
-                        class_id=set_counter - 1,
-                        operation_idx=op_idx,
-                        rotation_matrix=rotation,
-                        translation_vector=translation
-                    )
-                    current_hopping_set.append(hop)
-                    print(f"  Operation {op_idx} generates atom {idx}, distance={next_distance:.6f}")
-
-    # Get list of equivalent atom indices
-    equivalent_indices = sorted(equivalent_dict.keys())
-    print(f"Found {len(equivalent_indices)} equivalent atoms: indices {equivalent_indices}")
-    # Collect the actual atoms for this equivalent set
-    current_atom_set = [NN_atoms[idx] for idx in equivalent_indices]
-    equivalent_atom_sets_NN.append(current_atom_set)
-    equivalent_hopping_sets_NN.append(current_hopping_set)
-    # Print details of atoms in this set
-    print("Atoms in this set:")
-    for idx in equivalent_indices:
-        atm = NN_atoms[idx]
-        op_idx, _ = equivalent_dict[idx]
-        dist = np.linalg.norm(atm.cart_coord - N_center_atom.cart_coord)
-        op_str = f"op {op_idx}" + (" (identity)" if op_idx == identity_idx else "")
-        print(f"  Atom {idx} ({op_str}): Cell=[{atm.n0:2d},{atm.n1:2d},{atm.n2:2d}], "
-              f"Frac=[{atm.frac_coord[0]:.4f},{atm.frac_coord[1]:.4f},{atm.frac_coord[2]:.4f}], "
-              f"Dist={dist:.6f}")
-    # Remove equivalent atoms from NN_atoms
-    NN_atoms = [atm for i, atm in enumerate(NN_atoms) if i not in equivalent_indices]
-    print(f"Remaining NN_atoms: {len(NN_atoms)}")
-
-print("\n" + "=" * 60)
-print("NN PARTITIONING COMPLETE")
-print("=" * 60)
-print(f"Total number of NN equivalent sets: {len(equivalent_atom_sets_NN)}")
-
-# ==============================================================================
-# STEP 20: Build trees for NN hoppings
-# ==============================================================================
-print("\n" + "=" * 60)
-print("BUILDING TREES FOR NN HOPPINGS")
-print("=" * 60)
-# Store all NN trees (root vertices)
-tree_roots_NN = []
-
-for set_idx, hopping_set in enumerate(equivalent_hopping_sets_NN):
-    print(f"\n--- Building tree for NN Set {set_idx} ---")
-    print(f"Total hoppings in set: {len(hopping_set)}")
-    # Find the root hopping (identity operation)
-    root_hopping = None
-    child_hoppings = []
-
-    for hop in hopping_set:
-        if hop.operation_idx == identity_idx:
-            root_hopping = hop
-        else:
-            child_hoppings.append(hop)
-
-    if root_hopping is None:
-        print(f"WARNING: No identity hopping found in NN set {set_idx}!")
-        continue
-    print(f"Root hopping: {root_hopping}")
-    print(f"Number of child hoppings: {len(child_hoppings)}")
-    # Create root vertex
-    root_vertex = vertex(hopping=root_hopping, type=None, identity_idx=identity_idx)
-    # Create child vertices and link them to root
-    for hop in child_hoppings:
-        child_type = "linear"
-        child_v = vertex(hopping=hop, type=child_type, identity_idx=identity_idx)
-        # Add this child to the root's children list
-        root_vertex.add_child(child_v)
-    # Store the root (which now contains references to all its children)
-
-    tree_roots_NN.append(root_vertex)
-    print(f"Tree built: 1 root with {len(root_vertex.children)} children")
-    print(f"  Root: {root_vertex}")
-    for i, child in enumerate(root_vertex.children[:3]):
-        print(f"    Child {i}: {child}")
-    if len(root_vertex.children) > 3:
-        print(f"    ... and {len(root_vertex.children) - 3} more children")
-
-# Collect all roots from different groups
 all_roots = []
-
-# Add BB roots
 all_roots.extend(tree_roots)
-print(f"Added {len(tree_roots)} BB roots")
-
-# Add BN roots (which now include NB roots as hermitian children)
 all_roots.extend(tree_roots_BN)
-print(f"Added {len(tree_roots_BN)} BN roots")
-
-# Add NN roots
 all_roots.extend(tree_roots_NN)
-print(f"Added {len(tree_roots_NN)} NN roots")
-
-# Add independent NB and BN roots (leftovers without hermitian pairs)
 all_roots.extend([group[0] for group in independent_groups])
-print(f"Added {len(independent_groups)} independent roots")
 
-# Sort all_roots by hopping distance
+
 def get_hopping_distance(root):
     """Calculate the distance for a root's hopping"""
     hopping = root.hopping
     return np.linalg.norm(hopping.from_atom.cart_coord - hopping.to_atom.cart_coord)
 
+
 all_roots_sorted = sorted(all_roots, key=get_hopping_distance)
 
-print("\n" + "─" * 80)
-print("SUMMARY OF ALL ROOTS (SORTED BY DISTANCE)")
-print("─" * 80)
-print(f"Total roots: {len(all_roots_sorted)}")
+print(f"\nTotal roots: {len(all_roots_sorted)}")
 print(f"  BB roots: {len(tree_roots)}")
 print(f"  BN roots (with hermitian children): {len(tree_roots_BN)}")
 print(f"  NN roots: {len(tree_roots_NN)}")
 print(f"  Independent roots: {len(independent_groups)}")
-print("\n" + "=" * 80)
-
-print("\n" + "=" * 80)
-print("ALL SYMMETRY TREES (SORTED BY DISTANCE)")
-print("=" * 80)
-
-for tree_idx, root in enumerate(all_roots_sorted):
-    print(f"\n{'=' * 80}")
-    print(f"TREE {tree_idx}")
-    print(f"{'=' * 80}")
-
-    # Print root information
-    hopping = root.hopping
-    from_cell = [hopping.from_atom.n0, hopping.from_atom.n1, hopping.from_atom.n2]
-    to_cell = [hopping.to_atom.n0, hopping.to_atom.n1, hopping.to_atom.n2]
-
-    distance = get_hopping_distance(root)
-
-    print(f"ROOT: {hopping.to_atom.atom_name}[{to_cell[0]},{to_cell[1]},{to_cell[2]}] <- "
-          f"{hopping.from_atom.atom_name}[{from_cell[0]},{from_cell[1]},{from_cell[2]}]")
-    print(f"  Distance: {distance:.6f} Å")
-    print(f"  Operation: {hopping.operation_idx}")
-    print(f"  Type: {root.type}")
-    print(f"  Children: {len(root.children)}")
-    print()
-
-    # Print the tree using the previously defined function
-    print_tree(root)
 
 
-    # Print statistics for this tree
-    def count_nodes(node):
-        count = 1
-        for child in node.children:
-            count += count_nodes(child)
-        return count
-
-
-    total_nodes = count_nodes(root)
-    print(f"\nTree statistics:")
-    print(f"  Total nodes: {total_nodes}")
-    print(f"  Root children: {len(root.children)}")
-
-print("\n" + "=" * 80)
-print(f"TOTAL TREES: {len(all_roots_sorted)}")
-print("=" * 80)
-
+# ==============================================================================
+# Helper functions for constraint analysis
+# ==============================================================================
 def stabilizer(atom):
-    stabilizer_op_id_list=[]
-    atom_cart_coord=atom.cart_coord
-    # Iterate through all space group operations
+    """Find stabilizer operations for an atom"""
+    stabilizer_op_id_list = []
+    atom_cart_coord = atom.cart_coord
+
     for op_idx, group_mat in enumerate(space_group_bilbao_cart):
-        R = group_mat[:3, :3]  # Rotation matrix
-        b = group_mat[:3, 3]  # Translation vector
-        atom_cart_transformed=R@atom_cart_coord+b
-        if np.linalg.norm(atom_cart_coord-atom_cart_transformed,ord=2)<1e-6:
+        R = group_mat[:3, :3]
+        b = group_mat[:3, 3]
+        atom_cart_transformed = R @ atom_cart_coord + b
+        if np.linalg.norm(atom_cart_coord - atom_cart_transformed, ord=2) < 1e-6:
             stabilizer_op_id_list.append(op_idx)
+
     return set(stabilizer_op_id_list)
 
 
 def find_root_stabilizer(root):
-    to_atom=root.hopping.to_atom
-    from_atom=root.hopping.from_atom
+    """Find stabilizer operations for a hopping root"""
+    to_atom = root.hopping.to_atom
+    from_atom = root.hopping.from_atom
 
-    to_atom_stabilizer=stabilizer(to_atom)
-    from_atom_stabilizer=stabilizer(from_atom)
+    to_atom_stabilizer = stabilizer(to_atom)
+    from_atom_stabilizer = stabilizer(from_atom)
 
     root_stabilizer = to_atom_stabilizer.intersection(from_atom_stabilizer)
 
     return root_stabilizer
 
-def orbital_to_submatrix(orbitals, Vs,Vp,Vd,Vf):
-    full_orbitals = [
-        's',
-        'px', 'py', 'pz',
-        'dxy', 'dyz', 'dzx', 'd(x²-y²)', 'd(3z²-r²)',
-        'fz³', 'fxz²', 'fyz²', 'fxyz', 'fz(x²-y²)', 'fx(x²-3y²)', 'fy(3x²-y²)'
-    ]
-    # Remove leading numbers from orbitals (e.g., '2s' -> 's', '2pz' -> 'pz')
-    orbital_types = []
-    for orb in orbitals:
-        # Remove all leading digits
-        orbital_type = orb.lstrip('0123456789')
-        orbital_types.append(orbital_type)
-
-    # Sort orbitals by their position in full_orbitals
-    sorted_orbital_types = sorted(orbital_types, key=lambda orb: full_orbitals.index(orb))
-    # Get the indices in full_orbitals
-    orbital_indices = [full_orbitals.index(orb) for orb in sorted_orbital_types]
-
-
-    print(f"orbitals={orbitals}")
-    print(f"sorted_orbital_types={sorted_orbital_types}")
-    print(f"orbital_indices={orbital_indices}")
-    hopping_matrix_full = block_diag(Vs, Vp, Vd, Vf)
-    # Extract submatrix for the specific orbitals
-    # Use np.ix_ to select rows and columns corresponding to orbital_indices
-    V_submatrix = hopping_matrix_full[np.ix_(orbital_indices, orbital_indices)]
-
-    return V_submatrix
-
-
-
-# op_id=6
-# Vs=repr_s_np[op_id]
-# Vp=repr_p_np[op_id]
-# Vd=repr_d_np[op_id]
-# Vf=repr_f_np[op_id]
-# V_submatrix=orbital_to_submatrix(parsed_config['atom_types']["N"]['orbitals'],Vs,Vp,Vd,Vf)
-# print(V_submatrix)
-# print(Vp)
-
-# print(parsed_config['atom_types']["B"]['orbitals'])
-# print(parsed_config['atom_types']["N"]['orbitals'])
 
 def create_hopping_matrix(root, parsed_config, tree_idx):
     """
-       Create a symbolic hopping matrix for a root's hopping
+    Create a symbolic hopping matrix for a root's hopping
 
-       Args:
-           root: vertex object containing the hopping
-           parsed_config: configuration with orbital information
-           tree_idx: tree number/index
+    Args:
+        root: vertex object containing the hopping
+        parsed_config: configuration with orbital information
+        tree_idx: tree number/index
 
-       Returns:
-           sympy.Matrix: Hopping matrix with symbolic elements T^{tree_idx}_{i,j}
-       """
+    Returns:
+        sympy.Matrix: Hopping matrix with symbolic elements T^{tree_idx}_{i,j}
+    """
     hopping = root.hopping
-    # Get atom types
-    to_atom_type = hopping.to_atom.atom_name
-    from_atom_type = hopping.from_atom.atom_name
 
-    # Get orbitals for each atom
-    to_orbitals = parsed_config['atom_types'][to_atom_type]['orbitals']
-    from_orbitals = parsed_config['atom_types'][from_atom_type]['orbitals']
+    # Get orbitals directly from atom objects
+    to_orbitals = hopping.to_atom.get_orbital_names()
+    from_orbitals = hopping.from_atom.get_orbital_names()
+
+    # Fallback to parsed_config if atoms don't have orbital info
+    if not to_orbitals:
+        to_atom_type = hopping.to_atom.atom_name
+        to_orbitals = parsed_config['atom_types'][to_atom_type]['orbitals']
+
+    if not from_orbitals:
+        from_atom_type = hopping.from_atom.atom_name
+        from_orbitals = parsed_config['atom_types'][from_atom_type]['orbitals']
 
     # Get dimensions
     n_to = len(to_orbitals)
     n_from = len(from_orbitals)
+
     # Create symbolic matrix
     T = sp.zeros(n_to, n_from)
-    # Fill with symbolic elements T^{tree_idx}_{to_orbital, from_orbital}
+
+    # Fill with symbolic elements
     for i, to_orb in enumerate(to_orbitals):
         for j, from_orb in enumerate(from_orbitals):
-            # Create symbol name: T^{0}_{2s,2px}
             symbol_name = f"T^{{{tree_idx}}}_{{{to_orb},{from_orb}}}"
             T[i, j] = sp.Symbol(symbol_name)
 
     return T
 
 
-# print("constraint: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
-#
-# tree_idx = 6
-# root = all_roots_sorted[tree_idx]
-#
-# T = create_hopping_matrix(root, parsed_config, tree_idx)
-#
-# root_stabilizer =list( find_root_stabilizer(root))
-#
-# print_tree(root)
-# print(f"Root stabilizer: {root_stabilizer}")
-# sp.pprint(T)
-#
-# stab_id=1
-# op_id=root_stabilizer[stab_id]
-#
-# Vs=repr_s_np[op_id]
-# Vp=repr_p_np[op_id]
-# Vd=repr_d_np[op_id]
-# Vf=repr_f_np[op_id]
-# root_to_atom=root.hopping.to_atom
-# root_from_atom=root.hopping.from_atom
-# print(root_to_atom)
-# print(root_from_atom)
-# V_submatrix_to_atom=orbital_to_submatrix(parsed_config['atom_types'][root_to_atom.atom_name]['orbitals'],Vs,Vp,Vd,Vf)
-# V_submatrix_from_atom=orbital_to_submatrix(parsed_config['atom_types'][root_from_atom.atom_name]['orbitals'],Vs,Vp,Vd,Vf)
-# print(f"V_submatrix_to_atom={V_submatrix_to_atom}")
-# print(f"V_submatrix_from_atom={V_submatrix_from_atom}")
-# transformed_T=V_submatrix_to_atom*T*V_submatrix_from_atom.conjugate().transpose()
-#
-# diff_T=T-transformed_T
 def get_stabilizer_constraints(root, parsed_config, tree_idx):
     """
-        Get all constraint equations from stabilizer operations for a root's hopping matrix.
+    Get all constraint equations from stabilizer operations for a root's hopping matrix.
 
-        Args:
-            root: vertex object containing the hopping
-            parsed_config: configuration with orbital information
-            tree_idx: tree number/index
+    Args:
+        root: vertex object containing the hopping
+        parsed_config: configuration with orbital information
+        tree_idx: tree number/index
 
-        Returns:
-            dict: Contains 'T', 'constraints', 'equations'
-        """
+    Returns:
+        dict: Contains 'T', 'constraints', 'equations'
+    """
     # Create hopping matrix
     T = create_hopping_matrix(root, parsed_config, tree_idx)
+
     # Get stabilizer operations
     root_stabilizer = list(find_root_stabilizer(root))
+
     # Get atom information
     root_to_atom = root.hopping.to_atom
     root_from_atom = root.hopping.from_atom
+
     # Store all constraints
     all_constraints = []
     all_equations = []
+
     for stab_id, op_id in enumerate(root_stabilizer):
-        # Get representation matrices
-        Vs = repr_s_np[op_id]
-        Vp = repr_p_np[op_id]
-        Vd = repr_d_np[op_id]
-        Vf = repr_f_np[op_id]
-        # Get submatrices for the specific orbitals
-        V_submatrix_to_atom = orbital_to_submatrix(
-            parsed_config['atom_types'][root_to_atom.atom_name]['orbitals'],
-            Vs, Vp, Vd, Vf
-        )
-        V_submatrix_from_atom = orbital_to_submatrix(
-            parsed_config['atom_types'][root_from_atom.atom_name]['orbitals'],
-            Vs, Vp, Vd, Vf
-        )
-        # Convert numpy matrices to sympy
-        V_to = sp.Matrix(V_submatrix_to_atom)
-        V_from = sp.Matrix(V_submatrix_from_atom)
+        # Get representation matrices directly from atoms
+        V_to = root_to_atom.get_sympy_representation_matrix(op_id)
+        V_from = root_from_atom.get_sympy_representation_matrix(op_id)
+
         # Compute transformed T: V_to * T * V_from^†
         transformed_T = V_to * T * V_from.H
+
         # Compute difference
         diff_T = T - transformed_T
         diff_T_simplified = sp.simplify(diff_T)
+
         # Extract non-zero equations
         equations = []
         for i in range(diff_T.shape[0]):
@@ -1811,11 +1479,12 @@ def get_stabilizer_constraints(root, parsed_config, tree_idx):
                         'element': (i, j),
                         'equation': diff_T_simplified[i, j]
                     })
+
         all_constraints.append({
             'op_id': op_id,
             'stab_id': stab_id,
-            'V_to': V_submatrix_to_atom,
-            'V_from': V_submatrix_from_atom,
+            'V_to': root_to_atom.get_representation_matrix(op_id),
+            'V_from': root_from_atom.get_representation_matrix(op_id),
             'diff_T': diff_T_simplified,
             'equations': equations
         })
@@ -1829,223 +1498,16 @@ def get_stabilizer_constraints(root, parsed_config, tree_idx):
     }
 
 
-# # Usage example:
-# tree_idx = 10
-# root = all_roots_sorted[tree_idx]
-#
-# result = get_stabilizer_constraints(root, parsed_config, tree_idx)
-#
-# print("=" * 80)
-# print(f"TREE {tree_idx} CONSTRAINTS")
-# print("=" * 80)
-# print_tree(root)
-# print(f"\nRoot stabilizer: {result['root_stabilizer']}")
-# print(f"Number of stabilizer operations: {len(result['root_stabilizer'])}")
-#
-# print("\nHopping matrix T:")
-# sp.pprint(result['T'])
-#
-# print("\n" + "=" * 80)
-# print("CONSTRAINTS FROM EACH STABILIZER OPERATION")
-# print("=" * 80)
-#
-# for constraint in result['constraints']:
-#     print(f"\nOperation {constraint['op_id']} (stabilizer index {constraint['stab_id']}):")
-#     print(f"V_to:\n{constraint['V_to']}")
-#     print(f"V_from:\n{constraint['V_from']}")
-#
-#     if len(constraint['equations']) == 0:
-#         print("✓ No constraints (T is invariant)")
-#     else:
-#         print(f"Constraint equations ({len(constraint['equations'])} total):")
-#         for eq in constraint['equations']:
-#             print(f"  T[{eq['element'][0]},{eq['element'][1]}]: {eq['equation']} = 0")
-#
-#     print("\nDifference matrix (T - V_to*T*V_from^†):")
-#     sp.pprint(constraint['diff_T'])
-#
-# print("\n" + "=" * 80)
-# print("ALL UNIQUE CONSTRAINT EQUATIONS")
-# print("=" * 80)
-# print(f"Total equations: {len(result['all_equations'])}")
-# for eq in result['all_equations']:
-#     sp.pprint(eq)
-#
-# def are_equivalent_equations(eq1, eq2):
-#     """Check if two equations are mathematically equivalent"""
-#     return sp.simplify(eq1 - eq2) == 0
-# # Get unique equations
-# unique_eqs = []
-# for eq in result['all_equations']:
-#     canonical = sp.simplify(eq['equation'])
-#     # Check if this equation is already in unique_eqs
-#     if not any(are_equivalent_equations(canonical, existing) for existing in unique_eqs):
-#         unique_eqs.append(canonical)
-#
-# print(f"Unique equations: {len(unique_eqs)}")
-# for eq in unique_eqs:
-#     print(f"  {eq} = 0")
-#
-# # sp.pprint(result['T'])
-#
-#
-# def equations_to_matrix_form(equations):
-#     """
-#     Convert a list of linear equations to matrix form Ax = 0
-#
-#     Args:
-#         equations: list of sympy expressions (each equation = 0)
-#
-#     Returns:
-#         A: coefficient matrix (sympy.Matrix)
-#         x: vector of variables (sympy.Matrix)
-#         free_symbols: list of all unique symbols
-#     """
-#     # Collect all unique symbols (variables) from all equations
-#     all_symbols = set()
-#     for eq in equations:
-#         all_symbols.update(eq.free_symbols)
-#     # Sort symbols for consistent ordering (optional but recommended)
-#     sorted_symbols = sorted(all_symbols, key=lambda s: str(s))
-#     # Create coefficient matrix
-#     n_equations = len(equations)
-#     n_variables = len(sorted_symbols)
-#     A = sp.zeros(n_equations, n_variables)
-#     for i, eq in enumerate(equations):
-#         # Expand and collect coefficients
-#         eq_expanded = sp.expand(eq)
-#         for j, symbol in enumerate(sorted_symbols):
-#             # Get coefficient of this symbol in this equation
-#             A[i, j] = eq_expanded.coeff(symbol)
-#     # Create variable vector
-#     x = sp.Matrix(sorted_symbols)
-#     return A, x, sorted_symbols
-#
-#
-# # Convert to matrix form
-# A, x, symbols = equations_to_matrix_form(unique_eqs)
-#
-# print("="*60)
-# print("ORIGINAL MATRIX A")
-# print("="*60)
-# sp.pprint(A)
-# print(f"\nShape: {A.shape[0]} equations × {A.shape[1]} variables")
-#
-# # Get RREF
-# print("\n" + "="*60)
-# print("REDUCED ROW ECHELON FORM (RREF)")
-# print("="*60)
-#
-# A_rref, pivot_cols = A.rref()
-#
-# sp.pprint(A_rref)
-# print(f"\nPivot columns: {pivot_cols}")
-# print(f"Rank: {len(pivot_cols)}")
-# print(f"Nullity (free variables): {len(symbols) - len(pivot_cols)}")
-#
-# # Identify free and dependent variables
-# free_var_indices = [i for i in range(len(symbols)) if i not in pivot_cols]
-# dependent_var_indices = list(pivot_cols)
-#
-# print(f"\nDependent variables (columns {dependent_var_indices}): {[symbols[i] for i in dependent_var_indices]}")
-# print(f"Free variables (columns {free_var_indices}): {[symbols[i] for i in free_var_indices]}")
-#
-# # Get REF (for comparison)
-# print("\n" + "="*60)
-# print("ROW ECHELON FORM (REF) - Not Reduced")
-# print("="*60)
-#
-# A_ref = A.echelon_form()
-# sp.pprint(A_ref)
-#
-# # ==============================================================================
-# # STEP 21: Identify free and dependent variables, express dependencies
-# # ==============================================================================
-# print("\n" + "=" * 60)
-# print("EXPRESSING DEPENDENT VARIABLES IN TERMS OF FREE VARIABLES")
-# print("=" * 60)
-# # Get free and dependent variable indices from pivot columns
-# free_var_indices = [i for i in range(len(symbols)) if i not in pivot_cols]
-# dependent_var_indices = list(pivot_cols)
-# print(f"\nFree variables ({len(free_var_indices)}):")
-# for idx in free_var_indices:
-#     print(f"  {symbols[idx]}")
-#
-# print(f"\nDependent variables ({len(dependent_var_indices)}):")
-# for idx in dependent_var_indices:
-#     print(f"  {symbols[idx]}")
-#
-#
-# # Express dependent variables in terms of free variables
-# print("\n" + "-" * 60)
-# print("DEPENDENT VARIABLES AS FUNCTIONS OF FREE VARIABLES")
-# print("-" * 60)
-# dependent_expressions = {}
-#
-# for row_idx, col_idx in enumerate(pivot_cols):
-#     if row_idx < A_rref.shape[0]:
-#         # Get the dependent variable (pivot variable in this row)
-#         dependent_var = symbols[col_idx]
-#         # Build expression: collect free variable terms from this row
-#         expr_terms = []
-#         for free_idx in free_var_indices:
-#             coeff = -A_rref[row_idx, free_idx]  # Negative because we move to RHS
-#             if coeff != 0:
-#                 expr_terms.append(coeff * symbols[free_idx])
-#
-#         # Sum all terms
-#         if expr_terms:
-#             expression = sum(expr_terms)
-#         else:
-#             expression = sp.Integer(0)
-#         dependent_expressions[dependent_var] = expression
-#         print(f"{dependent_var} = {expression}")
-#
-#
-# # Reconstruct T with substitutions
-# print("\n" + "=" * 60)
-# print("RECONSTRUCTED HOPPING MATRIX T")
-# print("=" * 60)
-#
-# T_reconstructed = result['T'].copy()
-#
-# # Substitute dependent variables with their expressions
-# for dep_var, expr in dependent_expressions.items():
-#     T_reconstructed = T_reconstructed.subs(dep_var, expr)
-#
-# print("\nOriginal T:")
-# sp.pprint(result['T'])
-#
-# print("\nReconstructed T (in terms of free variables only):")
-# sp.pprint(T_reconstructed)
-#
-# print(f"\nNumber of independent parameters: {len(free_var_indices)}")
-# print(f"Independent parameters: {[symbols[i] for i in free_var_indices]}")
-
-
-# ==============================================================================
-# STEP 21: Define functions for constraint analysis
-# ==============================================================================
-
 def are_equivalent_equations(eq1, eq2):
     """Check if two equations are mathematically equivalent"""
     return sp.simplify(eq1 - eq2) == 0
 
 
 def get_unique_equations(all_equations):
-    """
-    Extract unique equations from a list of equation dictionaries
-
-    Args:
-        all_equations: List of dicts with 'equation' key
-
-    Returns:
-        List of unique sympy expressions
-    """
+    """Extract unique equations from a list of equation dictionaries"""
     unique_eqs = []
     for eq in all_equations:
         canonical = sp.simplify(eq['equation'])
-        # Check if this equation is already in unique_eqs
         if not any(are_equivalent_equations(canonical, existing) for existing in unique_eqs):
             unique_eqs.append(canonical)
     return unique_eqs
@@ -2056,7 +1518,7 @@ def equations_to_matrix_form(equations, tolerance=1e-10):
     Convert a list of linear equations to matrix form Ax = 0
 
     Args:
-        equations: list of sympy expressions (each equation = 0)
+        equations: list of sympy expressions
         tolerance: numerical tolerance for treating values as zero
 
     Returns:
@@ -2064,80 +1526,56 @@ def equations_to_matrix_form(equations, tolerance=1e-10):
         x: vector of variables (sympy.Matrix)
         symbols: list of all unique symbols
     """
-    # Collect all unique symbols (variables) from all equations
+    # Collect all unique symbols
     all_symbols = set()
     for eq in equations:
         all_symbols.update(eq.free_symbols)
 
-    # Sort symbols for consistent ordering
     sorted_symbols = sorted(all_symbols, key=lambda s: str(s))
 
-    # Create coefficient matrix using numpy first for numerical operations
+    # Create coefficient matrix
     n_equations = len(equations)
     n_variables = len(sorted_symbols)
     A_np = np.zeros((n_equations, n_variables))
 
     for i, eq in enumerate(equations):
-        # Expand and collect coefficients
         eq_expanded = sp.expand(eq)
         for j, symbol in enumerate(sorted_symbols):
-            # Get coefficient of this symbol in this equation
             coeff = eq_expanded.coeff(symbol)
-            # Convert to float if possible, otherwise evaluate numerically
             try:
                 coeff_val = float(coeff)
             except (TypeError, ValueError):
                 coeff_val = complex(coeff).real if coeff != 0 else 0.0
 
-            # Apply tolerance threshold
             if abs(coeff_val) < tolerance:
                 coeff_val = 0.0
 
             A_np[i, j] = coeff_val
 
-    # Convert numpy array to sympy Matrix
-    # Round very small values to exact zeros
     A = sp.Matrix(A_np)
-
-    # Create variable vector
     x = sp.Matrix(sorted_symbols)
 
     return A, x, sorted_symbols
 
 
 def get_dependent_expressions(A_rref, pivot_cols, symbols, tolerance=1e-10):
-    """
-    Express dependent variables in terms of free variables
-
-    Args:
-        A_rref: Reduced row echelon form matrix
-        pivot_cols: Tuple of pivot column indices
-        symbols: List of all symbols
-        tolerance: numerical tolerance for treating values as zero
-
-    Returns:
-        dict: Maps dependent variables to their expressions in terms of free variables
-    """
+    """Express dependent variables in terms of free variables"""
     free_var_indices = [i for i in range(len(symbols)) if i not in pivot_cols]
     dependent_expressions = {}
 
     for row_idx, col_idx in enumerate(pivot_cols):
         if row_idx < A_rref.shape[0]:
-            # Get the dependent variable (pivot variable in this row)
             dependent_var = symbols[col_idx]
 
-            # Build expression: collect free variable terms from this row
             expr_terms = []
             for free_idx in free_var_indices:
-                coeff = -A_rref[row_idx, free_idx]  # Negative because we move to RHS
+                coeff = -A_rref[row_idx, free_idx]
 
-                # Apply tolerance - treat very small coefficients as zero
                 try:
                     coeff_val = float(coeff)
                     if abs(coeff_val) < tolerance:
                         coeff = 0
                     else:
-                        # Round to reasonable precision
                         coeff = sp.nsimplify(coeff, rational=True, tolerance=tolerance)
                 except (TypeError, ValueError):
                     pass
@@ -2145,7 +1583,6 @@ def get_dependent_expressions(A_rref, pivot_cols, symbols, tolerance=1e-10):
                 if coeff != 0:
                     expr_terms.append(coeff * symbols[free_idx])
 
-            # Sum all terms
             if expr_terms:
                 expression = sum(expr_terms)
             else:
@@ -2157,19 +1594,9 @@ def get_dependent_expressions(A_rref, pivot_cols, symbols, tolerance=1e-10):
 
 
 def reconstruct_hopping_matrix(T_original, dependent_expressions):
-    """
-    Reconstruct hopping matrix with only free variables
-
-    Args:
-        T_original: Original symbolic hopping matrix
-        dependent_expressions: Dict mapping dependent vars to expressions
-
-    Returns:
-        sympy.Matrix: Reconstructed matrix in terms of free variables only
-    """
+    """Reconstruct hopping matrix with only free variables"""
     T_reconstructed = T_original.copy()
 
-    # Substitute dependent variables with their expressions
     for dep_var, expr in dependent_expressions.items():
         T_reconstructed = T_reconstructed.subs(dep_var, expr)
 
@@ -2185,101 +1612,41 @@ def analyze_tree_constraints(root, parsed_config, tree_idx, verbose=True, tolera
         parsed_config: Configuration dictionary
         tree_idx: Tree index number
         verbose: Whether to print detailed output
-        tolerance: numerical tolerance for RREF computation
+        tolerance: numerical tolerance
 
     Returns:
-        dict: Complete analysis results including T, constraints, RREF, etc.
+        dict: Complete analysis results
     """
     if verbose:
         print("=" * 80)
         print(f"TREE {tree_idx} CONSTRAINT ANALYSIS")
         print("=" * 80)
-        print_tree(root)
 
-    # Step 1: Get stabilizer constraints
+    # Get stabilizer constraints
     root_stab_result = get_stabilizer_constraints(root, parsed_config, tree_idx)
 
     if verbose:
         print(f"\nRoot stabilizer: {root_stab_result['root_stabilizer']}")
         print(f"Number of stabilizer operations: {len(root_stab_result['root_stabilizer'])}")
-        print("\nHopping matrix T:")
-        sp.pprint(root_stab_result['T'])
 
-    # Step 2: Get unique equations
+    # Get unique equations
     unique_eqs = get_unique_equations(root_stab_result['all_equations'])
 
-    if verbose:
-        print(f"\nUnique constraint equations: {len(unique_eqs)}")
-        for i, eq in enumerate(unique_eqs):
-            print(f"  Eq {i}: {eq} = 0")
-
-    # Step 3: Convert to matrix form if there are constraints
     if len(unique_eqs) > 0:
         A, x, symbols = equations_to_matrix_form(unique_eqs, tolerance=tolerance)
 
-        if verbose:
-            print("\n" + "=" * 60)
-            print("CONSTRAINT MATRIX A")
-            print("=" * 60)
-            sp.pprint(A)
-            print(f"\nShape: {A.shape[0]} equations × {A.shape[1]} variables")
-
-        # Step 4: Get RREF with sympy (which uses exact arithmetic after conversion)
-        # But first, convert small values to exact zeros
         A_cleaned = A.applyfunc(lambda x: 0 if abs(float(x)) < tolerance else x)
         A_rref, pivot_cols = A_cleaned.rref()
 
-        # Clean up RREF result - remove numerical noise
         A_rref = A_rref.applyfunc(
             lambda x: 0 if abs(float(x)) < tolerance else sp.nsimplify(x, rational=True, tolerance=tolerance))
 
-        if verbose:
-            print("\n" + "=" * 60)
-            print("REDUCED ROW ECHELON FORM (RREF)")
-            print("=" * 60)
-            sp.pprint(A_rref)
-            print(f"\nPivot columns: {pivot_cols}")
-            print(f"Rank: {len(pivot_cols)}")
-            print(f"Nullity (free variables): {len(symbols) - len(pivot_cols)}")
-
-        # Step 5: Identify free and dependent variables
         free_var_indices = [i for i in range(len(symbols)) if i not in pivot_cols]
         dependent_var_indices = list(pivot_cols)
 
-        if verbose:
-            print(f"\nFree variables ({len(free_var_indices)}):")
-            for idx in free_var_indices:
-                print(f"  {symbols[idx]}")
-
-            print(f"\nDependent variables ({len(dependent_var_indices)}):")
-            for idx in dependent_var_indices:
-                print(f"  {symbols[idx]}")
-
-        # Step 6: Express dependent variables in terms of free variables
         dependent_expressions = get_dependent_expressions(A_rref, pivot_cols, symbols, tolerance=tolerance)
-
-        if verbose:
-            print("\n" + "-" * 60)
-            print("DEPENDENT VARIABLES AS FUNCTIONS OF FREE VARIABLES")
-            print("-" * 60)
-            for dep_var, expr in dependent_expressions.items():
-                print(f"{dep_var} = {expr}")
-
-        # Step 7: Reconstruct hopping matrix
         T_reconstructed = reconstruct_hopping_matrix(root_stab_result['T'], dependent_expressions)
 
-        if verbose:
-            print("\n" + "=" * 60)
-            print("RECONSTRUCTED HOPPING MATRIX T")
-            print("=" * 60)
-            print("\nOriginal T:")
-            sp.pprint(root_stab_result['T'])
-            print("\nReconstructed T (in terms of free variables only):")
-            sp.pprint(T_reconstructed)
-            print(f"\nNumber of independent parameters: {len(free_var_indices)}")
-            print(f"Independent parameters: {[symbols[i] for i in free_var_indices]}")
-
-        # Store results
         root_stab_result.update({
             'unique_equations': unique_eqs,
             'constraint_matrix': A,
@@ -2294,10 +1661,6 @@ def analyze_tree_constraints(root, parsed_config, tree_idx, verbose=True, tolera
             'nullity': len(symbols) - len(pivot_cols)
         })
     else:
-        # No constraints - all parameters are free
-        if verbose:
-            print("\n✓ No constraints from stabilizer - all matrix elements are independent")
-
         total_params = root_stab_result['T'].shape[0] * root_stab_result['T'].shape[1]
         root_stab_result.update({
             'unique_equations': [],
@@ -2316,25 +1679,567 @@ def analyze_tree_constraints(root, parsed_config, tree_idx, verbose=True, tolera
     return root_stab_result
 
 
-# ==============================================================================
-# STEP 22: Usage example - analyze a single tree
-# ==============================================================================
 
-# Analyze tree 10 with custom tolerance
-tree_idx = 3
+
+def print_tree(root, prefix="", is_last=True, show_details=True):
+    """Print a tree structure in a visual format"""
+    connector = "└── " if is_last else "├── "
+
+    if root.is_root:
+        node_label = "ROOT"
+        style = "╔═══"
+    else:
+        node_label = f"CHILD ({root.type})"
+        style = connector
+
+    hop = root.hopping
+    from_cell = [hop.from_atom.n0, hop.from_atom.n1, hop.from_atom.n2]
+    to_atom_name = hop.to_atom.atom_name
+    from_atom_name = hop.from_atom.atom_name
+    distance = np.linalg.norm(hop.from_atom.cart_coord - hop.to_atom.cart_coord)
+
+    if show_details:
+        node_desc = (f"{node_label} | Op={hop.operation_idx:2d} | "
+                     f"{to_atom_name}←{from_atom_name} | "
+                     f"Cell=[{from_cell[0]:2d},{from_cell[1]:2d},{from_cell[2]:2d}] | "
+                     f"Dist={distance:.4f}")
+    else:
+        node_desc = f"{node_label} | Op={hop.operation_idx:2d}"
+
+    print(f"{prefix}{style}{node_desc}")
+
+    if root.children:
+        if root.is_root:
+            new_prefix = prefix + "    "
+        else:
+            extension = "    " if is_last else "│   "
+            new_prefix = prefix + extension
+
+        for i, child in enumerate(root.children):
+            is_last_child = (i == len(root.children) - 1)
+            print_tree(child, new_prefix, is_last_child, show_details)
+
+def propagate_T_to_child(parent_vertex, child_vertex):
+    """
+    Propagate hopping matrix T from parent to child using symmetry operations.
+
+    For linear children: T_child = V_to * T_parent * V_from^†
+    For hermitian children: T_child = (V_to * T_parent * V_from^†)^†
+
+    :param parent_vertex: Parent vertex object
+    :param child_vertex: Child vertex object (or None)
+    :return: None (modifies child_vertex.hopping.T in place, or returns early if child is None)
+    """
+    # Early return if child is None
+    if child_vertex is None:
+        return
+
+    # Get parent's hopping matrix
+    T_parent = parent_vertex.hopping.T
+
+    # Get the operation that transforms parent to child
+    op_idx_parent_to_child = child_vertex.hopping.operation_idx
+
+    # Get representation matrices for parent's atoms under this operation
+    parent_to_atom_V = (parent_vertex.hopping.to_atom.orbital_representations)[op_idx_parent_to_child]
+    parent_from_atom_V = (parent_vertex.hopping.from_atom.orbital_representations)[op_idx_parent_to_child]
+
+    # Get child type
+    child_type = child_vertex.type
+
+    # Convert to SymPy matrices
+    parent_to_atom_V_sp = sp.Matrix(parent_to_atom_V)
+    parent_from_atom_V_sp = sp.Matrix(parent_from_atom_V)
+
+    # Apply transformation based on child type
+    if child_type == "linear":
+        T_child = parent_to_atom_V_sp * T_parent * parent_from_atom_V_sp.H
+    elif child_type == "hermitian":
+        T_child = (parent_to_atom_V_sp * T_parent * parent_from_atom_V_sp.H).H
+    else:
+        raise ValueError(f"Unknown child type: {child_type}")
+
+    # Simplify the result
+    T_child = sp.simplify(T_child)
+
+    # Assign to child
+    child_vertex.hopping.T = T_child
+
+
+
+# ==============================================================================
+# Helper function: Recursively propagate to all children
+# ==============================================================================
+def propagate_to_all_children(parent_vertex, verbose=False):
+    """
+        Recursively propagate T from parent to all descendants
+
+        Args:
+            parent_vertex: Parent vertex
+            verbose: Print progress
+        """
+
+    for child in parent_vertex.children:
+        propagate_T_to_child(parent_vertex, child)
+        if verbose:
+            print(f"  Propagated to child (op={child.hopping.operation_idx}, type={child.type})")
+        # Recursively propagate to grandchildren
+        if len(child.children) > 0:
+            propagate_to_all_children(child, verbose)
+
+
+# ==============================================================================
+# Helper function: Print all T matrices in a tree
+# ==============================================================================
+def print_all_T_in_tree(root, tree_idx=None):
+    """
+    Print T matrices for all vertices in a tree
+
+    Args:
+        root: Root vertex of the tree
+        tree_idx: Optional tree index for labeling
+    """
+    print("\n" + "=" * 80)
+    if tree_idx is not None:
+        print(f"ALL T MATRICES IN TREE {tree_idx}")
+    else:
+        print("ALL T MATRICES IN TREE")
+    print("=" * 80)
+
+    # Print root
+    print("\n" + "-" * 80)
+    print(f"ROOT | Op={root.hopping.operation_idx}")
+    print(f"  {root.hopping.to_atom.atom_name} ← {root.hopping.from_atom.atom_name}")
+    print(f"  Distance: {np.linalg.norm(root.hopping.from_atom.cart_coord - root.hopping.to_atom.cart_coord):.4f}")
+    print("-" * 80)
+    if root.hopping.T is not None:
+        sp.pprint(root.hopping.T)
+    else:
+        print("T = None (not computed)")
+
+    # Counter for children
+    child_counter = [0]  # Use list to make it mutable in nested function
+
+    def print_children_T(parent_vertex, level=1):
+        """Recursively print children T matrices"""
+        for child in parent_vertex.children:
+            indent = "  " * level
+            child_num = child_counter[0]
+            child_counter[0] += 1
+
+            print("\n" + "-" * 80)
+            print(f"{indent}CHILD {child_num} | Op={child.hopping.operation_idx} | Type={child.type}")
+            print(f"{indent}  {child.hopping.to_atom.atom_name} ← {child.hopping.from_atom.atom_name}")
+            print(
+                f"{indent}  Distance: {np.linalg.norm(child.hopping.from_atom.cart_coord - child.hopping.to_atom.cart_coord):.4f}")
+            print("-" * 80)
+
+            if child.hopping.T is not None:
+                sp.pprint(child.hopping.T)
+            else:
+                print(f"{indent}T = None (not computed)")
+
+            # Recursively print grandchildren
+            if len(child.children) > 0:
+                print_children_T(child, level + 1)
+
+    # Print all children
+    print_children_T(root)
+
+    print("\n" + "=" * 80)
+    print(f"Total vertices printed: {child_counter[0] + 1} (1 root + {child_counter[0]} children)")
+    print("=" * 80)
+
+
+def print_all_T_compact(root, tree_idx=None):
+    """Print all T matrices in compact format"""
+
+    print("\n" + "=" * 80)
+    if tree_idx is not None:
+        print(f"TREE {tree_idx}: ALL T MATRICES")
+    else:
+        print("ALL T MATRICES")
+    print("=" * 80)
+
+    vertices = [(root, "ROOT", 0)]  # (vertex, label, level)
+
+    # Collect all vertices using BFS
+    queue = [(child, f"CHILD", 1) for child in root.children]
+    child_num = 0
+
+    while queue:
+        vertex, label_prefix, level = queue.pop(0)
+        if label_prefix == "CHILD":
+            label = f"{label_prefix}_{child_num}"
+            child_num += 1
+        else:
+            label = label_prefix
+
+        vertices.append((vertex, label, level))
+
+        # Add children to queue
+        for child in vertex.children:
+            queue.append((child, "CHILD", level + 1))
+
+    # Print all T matrices
+    for vertex, label, level in vertices:
+        indent = "  " * level
+        print(f"\n{indent}{label} (op={vertex.hopping.operation_idx}, type={vertex.type}):")
+        if vertex.hopping.T is not None:
+            # Print with indentation
+            T_str = sp.pretty(vertex.hopping.T)
+            for line in T_str.split('\n'):
+                print(f"{indent}{line}")
+        else:
+            print(f"{indent}T = None")
+
+    print("\n" + "=" * 80)
+
+
+# ==============================================================================
+# Helper function: Print tree with T matrices
+# ==============================================================================
+def print_tree_with_T(root, prefix="", is_last=True, show_T=True):
+    """
+    Print tree structure with T matrices displayed inline
+
+    Args:
+        root: Root vertex of the tree
+        prefix: Prefix for tree lines (used for recursion)
+        is_last: Whether this is the last child (for formatting)
+        show_T: Whether to show T matrices
+    """
+    # Determine connector style
+    connector = "└── " if is_last else "├── "
+
+    if root.is_root:
+        node_label = "ROOT"
+        style = "╔═══"
+    else:
+        node_label = f"CHILD ({root.type})"
+        style = connector
+
+    # Get hopping information
+    hop = root.hopping
+    from_cell = [hop.from_atom.n0, hop.from_atom.n1, hop.from_atom.n2]
+    to_atom_name = hop.to_atom.atom_name
+    from_atom_name = hop.from_atom.atom_name
+    distance = np.linalg.norm(hop.from_atom.cart_coord - hop.to_atom.cart_coord)
+
+    # Print node header
+    node_desc = (f"{node_label} | Op={hop.operation_idx:2d} | "
+                 f"{to_atom_name}←{from_atom_name} | "
+                 f"Cell=[{from_cell[0]:2d},{from_cell[1]:2d},{from_cell[2]:2d}] | "
+                 f"Dist={distance:.4f}")
+
+    print(f"{prefix}{style}{node_desc}")
+
+    # Print T matrix if requested and available
+    if show_T and hop.T is not None:
+        # Determine the continuation prefix for T matrix lines
+        if root.is_root:
+            T_prefix = prefix + "    "
+        else:
+            if is_last:
+                T_prefix = prefix + "    "
+            else:
+                T_prefix = prefix + "│   "
+
+        # Get pretty-printed T matrix
+        T_str = sp.pretty(hop.T)
+        T_lines = T_str.split('\n')
+
+        # Print T matrix with proper indentation
+        print(f"{T_prefix}T =")
+        for line in T_lines:
+            print(f"{T_prefix}{line}")
+
+    elif show_T:
+        # T is None
+        if root.is_root:
+            T_prefix = prefix + "    "
+        else:
+            if is_last:
+                T_prefix = prefix + "    "
+            else:
+                T_prefix = prefix + "│   "
+        print(f"{T_prefix}T = None")
+
+    # Recursively print children
+    if root.children:
+        if root.is_root:
+            new_prefix = prefix + "    "
+        else:
+            extension = "    " if is_last else "│   "
+            new_prefix = prefix + extension
+
+        for i, child in enumerate(root.children):
+            is_last_child = (i == len(root.children) - 1)
+            print_tree_with_T(child, new_prefix, is_last_child, show_T)
+
+
+# ==============================================================================
+# Helper function: Verify constraints for a vertex
+# ==============================================================================
+def verify_constraint(vertex, verbose=True):
+    """
+    Verify that a vertex's T matrix satisfies all stabilizer constraints.
+
+    For each stabilizer operation g: T = V_to(g) * T * V_from(g)^†
+
+    Args:
+        vertex: vertex object with hopping.T assigned
+        verbose: whether to print detailed results
+
+    Returns:
+        dict: {
+            'satisfied': bool,
+            'num_stabilizers': int,
+            'violations': list of dicts with violation info
+        }
+    """
+    # Get stabilizer operations
+    vertex_stab_all = find_root_stabilizer(vertex)
+    to_atom = vertex.hopping.to_atom
+    from_atom = vertex.hopping.from_atom
+
+    # Get T matrix
+    T = vertex.hopping.T
+
+    if T is None:
+        if verbose:
+            print("WARNING: T matrix is None, cannot verify constraints")
+        return {
+            'satisfied': False,
+            'num_stabilizers': len(vertex_stab_all),
+            'violations': [],
+            'error': 'T is None'
+        }
+
+    # Convert T to sympy if needed
+    T_sp = sp.Matrix(T) if not isinstance(T, sp.Matrix) else T
+
+    violations = []
+
+    if verbose:
+        print(f"\nVerifying constraints for vertex (op={vertex.hopping.operation_idx}):")
+        print(f"  Number of stabilizer operations: {len(vertex_stab_all)}")
+
+    # Check each stabilizer operation
+    for stab_idx, op_id in enumerate(vertex_stab_all):
+        # Get representation matrices
+        V_to = to_atom.get_sympy_representation_matrix(op_id)
+        V_from = from_atom.get_sympy_representation_matrix(op_id)
+
+        # Compute transformed T: V_to * T * V_from^†
+        T_transformed = V_to * T_sp * V_from.H
+
+        # Compute difference
+        diff = T_sp - T_transformed
+        diff_simplified = sp.simplify(diff)
+
+        # Check if difference is zero matrix
+        is_zero = diff_simplified.equals(sp.zeros(*diff_simplified.shape))
+
+        if not is_zero:
+            violations.append({
+                'op_id': op_id,
+                'stab_idx': stab_idx,
+                'diff_matrix': diff_simplified
+            })
+
+            if verbose:
+                print(f"  ❌ Stabilizer {stab_idx} (op={op_id}): VIOLATED")
+                print(f"     Difference matrix:")
+                sp.pprint(diff_simplified)
+        else:
+            if verbose:
+                print(f"  ✓ Stabilizer {stab_idx} (op={op_id}): satisfied")
+
+    # Summary
+    satisfied = (len(violations) == 0)
+
+    if verbose:
+        print(f"\n{'=' * 60}")
+        if satisfied:
+            print("✓ ALL CONSTRAINTS SATISFIED")
+        else:
+            print(f"❌ CONSTRAINTS VIOLATED: {len(violations)} out of {len(vertex_stab_all)} stabilizers")
+        print(f"{'=' * 60}")
+
+    return {
+        'satisfied': satisfied,
+        'num_stabilizers': len(vertex_stab_all),
+        'num_violations': len(violations),
+        'violations': violations
+    }
+
+
+# ==============================================================================
+# Helper function: Verify all vertices in a tree
+# ==============================================================================
+def verify_tree_constraints(root, verbose=True):
+    """
+    Verify constraints for all vertices in a tree
+
+    Args:
+        root: Root vertex of tree
+        verbose: print detailed results
+
+    Returns:
+        dict: Summary of verification results
+    """
+    if verbose:
+        print("\n" + "=" * 80)
+        print("VERIFYING CONSTRAINTS FOR ENTIRE TREE")
+        print("=" * 80)
+
+    all_vertices = [root]
+    vertex_labels = ["ROOT"]
+
+    # Collect all vertices
+    def collect_vertices(vertex, label_prefix="CHILD", child_num=[0]):
+        for child in vertex.children:
+            all_vertices.append(child)
+            vertex_labels.append(f"{label_prefix}_{child_num[0]}")
+            child_num[0] += 1
+            collect_vertices(child, label_prefix, child_num)
+
+    collect_vertices(root)
+
+    # Verify each vertex
+    results = []
+    all_satisfied = True
+
+    for vertex, label in zip(all_vertices, vertex_labels):
+        if verbose:
+            print(f"\n{'─' * 80}")
+            print(f"{label} (op={vertex.hopping.operation_idx}, type={vertex.type})")
+            print(f"{'─' * 80}")
+
+        result = verify_constraint(vertex, verbose=verbose)
+        result['vertex_label'] = label
+        result['vertex'] = vertex  # Store reference to vertex
+        results.append(result)
+
+        if not result['satisfied']:
+            all_satisfied = False
+
+    # Final summary
+    if verbose:
+        print("\n" + "=" * 80)
+        print("TREE VERIFICATION SUMMARY")
+        print("=" * 80)
+        print(f"Total vertices checked: {len(all_vertices)}")
+
+        num_violations = sum(1 for r in results if not r['satisfied'])
+        if all_satisfied:
+            print("✓ ALL VERTICES SATISFY CONSTRAINTS")
+        else:
+            print(f"❌ {num_violations} vertices have violations")
+            print("\n" + "─" * 80)
+            print("DETAILED VIOLATION INFORMATION:")
+            print("─" * 80)
+
+            for r in results:
+                if not r['satisfied']:
+                    vertex = r['vertex']
+                    hop = vertex.hopping
+
+                    print(f"\n{r['vertex_label']}:")
+                    print(f"  Operation index: {hop.operation_idx}")
+                    print(f"  Vertex type: {vertex.type}")
+                    print(
+                        f"  To atom: {hop.to_atom.atom_name} at cell [{hop.to_atom.n0}, {hop.to_atom.n1}, {hop.to_atom.n2}]")
+                    print(
+                        f"  From atom: {hop.from_atom.atom_name} at cell [{hop.from_atom.n0}, {hop.from_atom.n1}, {hop.from_atom.n2}]")
+                    print(f"  Distance: {np.linalg.norm(hop.from_atom.cart_coord - hop.to_atom.cart_coord):.6f}")
+                    print(f"  Number of violated stabilizers: {r['num_violations']} out of {r['num_stabilizers']}")
+
+                    print(f"\n  Violated stabilizer operations:")
+                    for v in r['violations']:
+                        print(f"    - Stabilizer {v['stab_idx']} (operation {v['op_id']})")
+                        print(f"      Difference matrix (T - V_to * T * V_from^†):")
+                        diff_str = sp.pretty(v['diff_matrix'])
+                        for line in diff_str.split('\n'):
+                            print(f"        {line}")
+
+                    # Print the T matrix for this vertex
+                    if hop.T is not None:
+                        print(f"\n  Current T matrix:")
+                        T_str = sp.pretty(hop.T)
+                        for line in T_str.split('\n'):
+                            print(f"    {line}")
+                    else:
+                        print(f"\n  T matrix: None")
+
+                    print()  # Extra newline for readability
+
+        print("=" * 80)
+
+    return {
+        'all_satisfied': all_satisfied,
+        'total_vertices': len(all_vertices),
+        'num_violations': sum(1 for r in results if not r['satisfied']),
+        'results': results
+    }
+# ==============================================================================
+# STEP 14: Example usage - analyze a single tree
+# ==============================================================================
+print("\n" + "=" * 80)
+print("EXAMPLE: ANALYZING A SINGLE TREE")
+print("=" * 80)
+
+tree_idx = 2
 root = all_roots_sorted[tree_idx]
 
+# Verify atoms have representations
+print(f"\nRoot hopping information:")
+print(f"  To atom: {root.hopping.to_atom}")
+print(f"  From atom: {root.hopping.from_atom}")
+print(f"  To atom has representations: {root.hopping.to_atom.orbital_representations is not None}")
+print(f"  From atom has representations: {root.hopping.from_atom.orbital_representations is not None}")
+
+# Print the tree structure (without T matrices first)
+print("\n" + "-" * 80)
+print(f"TREE {tree_idx} STRUCTURE (without T)")
+print("-" * 80)
+print_tree(root, show_details=True)
+
+# Run analysis
 analysis_result = analyze_tree_constraints(root, parsed_config, tree_idx, verbose=True, tolerance=1e-8)
 
-# Access results
+# Print summary
 print("\n" + "=" * 80)
 print("ANALYSIS SUMMARY")
 print("=" * 80)
-print(
-    f"Total parameters in T: {analysis_result['T'].shape[0]} × {analysis_result['T'].shape[1]} = {analysis_result['T'].shape[0] * analysis_result['T'].shape[1]}")
+print(f"Total parameters in T: {analysis_result['T'].shape[0]} × {analysis_result['T'].shape[1]} = {analysis_result['T'].shape[0] * analysis_result['T'].shape[1]}")
 print(f"Number of constraints: {len(analysis_result['unique_equations'])}")
 print(f"Rank of constraint matrix: {analysis_result['rank']}")
 print(f"Number of free parameters: {analysis_result['nullity']}")
-root.hopping.T=analysis_result['T_reconstructed']
-sp.pprint(root.hopping.T)
 
+# CRITICAL: Assign T to root before propagation
+root.hopping.T = analysis_result['T_reconstructed']
+
+# Now propagate to all children
+print("\nPropagating to children:")
+propagate_to_all_children(root, verbose=True)
+
+# Print the tree WITH T matrices
+print("\n" + "=" * 80)
+print(f"TREE {tree_idx} STRUCTURE (with T matrices)")
+print("=" * 80)
+print_tree_with_T(root, show_T=True)
+
+print("\n" + "=" * 80)
+print("PREPROCESSING COMPLETE")
+print("=" * 80)
+
+# Verify constraints for the root
+print("\n" + "=" * 80)
+print("VERIFYING ROOT CONSTRAINTS")
+print("=" * 80)
+verify_result = verify_constraint(root, verbose=True)
+
+# Verify constraints for all vertices in the tree
+tree_verification = verify_tree_constraints(root, verbose=True)
