@@ -1770,24 +1770,77 @@ def propagate_T_to_child(parent_vertex, child_vertex):
 # ==============================================================================
 # Helper function: Recursively propagate to all children
 # ==============================================================================
+# def propagate_to_all_children(parent_vertex, verbose=False):
+#     """
+#         Recursively propagate T from parent to all descendants
+#
+#         Args:
+#             parent_vertex: Parent vertex
+#             verbose: Print progress
+#         """
+#
+#     for child in parent_vertex.children:
+#         propagate_T_to_child(parent_vertex, child)
+#         if verbose:
+#             print(f"  Propagated to child (op={child.hopping.operation_idx}, type={child.type})")
+#         # Recursively propagate to grandchildren
+#         if len(child.children) > 0:
+#             propagate_to_all_children(child, verbose)
+
+# ==============================================================================
+# Helper function: Propagate to all children using BFS
+# ==============================================================================
 def propagate_to_all_children(parent_vertex, verbose=False):
     """
-        Recursively propagate T from parent to all descendants
+    Propagate T from parent to all descendants using BFS (breadth-first search)
 
-        Args:
-            parent_vertex: Parent vertex
-            verbose: Print progress
-        """
+    Processes vertices level-by-level:
+    - Level 1: All immediate children
+    - Level 2: All grandchildren
+    - Level 3: All great-grandchildren
+    - etc.
 
-    for child in parent_vertex.children:
-        propagate_T_to_child(parent_vertex, child)
+    Args:
+        parent_vertex: Parent vertex (root of subtree)
+        verbose: Print progress
+    """
+    from collections import deque
+
+    if len(parent_vertex.children) == 0:
         if verbose:
-            print(f"  Propagated to child (op={child.hopping.operation_idx}, type={child.type})")
-        # Recursively propagate to grandchildren
-        if len(child.children) > 0:
-            propagate_to_all_children(child, verbose)
+            print("  No children to propagate to")
+        return
 
+    # Queue stores tuples: (parent_vertex, child_vertex, level)
+    queue = deque()
 
+    # Initialize queue with all immediate children (level 1)
+    for child in parent_vertex.children:
+        queue.append((parent_vertex, child, 1))
+
+    # Track statistics
+    total_propagated = 0
+    max_level = 0
+
+    # Process queue level-by-level
+    while queue:
+        parent, child, level = queue.popleft()
+
+        # Propagate T from parent to child
+        propagate_T_to_child(parent, child)
+        total_propagated += 1
+        max_level = max(max_level, level)
+
+        if verbose:
+            indent = "  " * level
+            print(f"{indent}Level {level}: Propagated to child (op={child.hopping.operation_idx}, type={child.type})")
+
+        # Add all grandchildren to queue (next level)
+        for grandchild in child.children:
+            queue.append((child, grandchild, level + 1))
+
+    if verbose:
+        print(f"\n  BFS completed: {total_propagated} vertices propagated, max depth = {max_level}")
 # ==============================================================================
 # Helper function: Print all T matrices in a tree
 # ==============================================================================
