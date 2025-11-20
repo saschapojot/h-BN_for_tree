@@ -1779,7 +1779,412 @@ def analyze_tree_constraints(root, parsed_config, tree_idx, verbose=True, tolera
     return root_stab_result
 
 
+def generate_latex_tree_ascii_style_debug(root, tree_idx=None, filename=None):
+    """
+    Generate LaTeX code that closely mimics ASCII tree output
+    Uses ASCII-compatible characters for tree drawing
 
+    Args:
+        root: Root vertex of the tree
+        tree_idx: Optional tree index for labeling
+        filename: Optional filename to save the LaTeX code
+
+    Returns:
+        str: LaTeX code as a string
+    """
+
+    def sympy_to_latex(matrix):
+        """Convert sympy matrix to LaTeX"""
+        if matrix is None:
+            return r"\text{None}"
+        return sp.latex(matrix)
+
+    def generate_tree_structure(vertex, prefix="", is_last=True, output_lines=None, level=0):
+        """Generate tree structure similar to print_tree_with_T"""
+        if output_lines is None:
+            output_lines = []
+
+        # Get node information
+        hop = vertex.hopping
+        from_cell = [hop.from_atom.n0, hop.from_atom.n1, hop.from_atom.n2]
+        to_atom_name = hop.to_atom.atom_name
+        from_atom_name = hop.from_atom.atom_name
+        distance = np.linalg.norm(hop.from_atom.cart_coord - hop.to_atom.cart_coord)
+
+        # Debug output
+        print(
+            f"Level {level}: prefix='{prefix}', is_last={is_last}, type={vertex.type if not vertex.is_root else 'ROOT'}")
+
+        # Determine connector (ASCII-compatible)
+        if vertex.is_root:
+            connector = "ROOT "
+            node_label = ""
+        else:
+            connector = "+-- " if is_last else "|-- "
+            node_label = f"CHILD ({vertex.type})"
+
+        # Build node description
+        if vertex.is_root:
+            node_desc = (f"{connector}| Op={hop.operation_idx:2d} | "
+                         f"{to_atom_name}<-{from_atom_name} | "
+                         f"Cell=[{from_cell[0]:2d},{from_cell[1]:2d},{from_cell[2]:2d}] | "
+                         f"Dist={distance:.4f}")
+        else:
+            node_desc = (f"{connector}{node_label} | Op={hop.operation_idx:2d} | "
+                         f"{to_atom_name}<-{from_atom_name} | "
+                         f"Cell=[{from_cell[0]:2d},{from_cell[1]:2d},{from_cell[2]:2d}] | "
+                         f"Dist={distance:.4f}")
+
+        # Add tree line
+        tree_line = prefix + node_desc
+        print(f"  Tree line: '{tree_line}'")
+
+        output_lines.append({
+            'type': 'tree_line',
+            'content': tree_line,
+            'indent_len': len(prefix)
+        })
+
+        # Determine prefix for T matrix display
+        if vertex.is_root:
+            T_prefix = "    "
+        else:
+            T_prefix = prefix + ("    " if is_last else "|   ")
+
+        output_lines.append({
+            'type': 'T_label',
+            'content': T_prefix + "T =",
+            'indent_len': len(T_prefix)
+        })
+
+        if hop.T is not None:
+            output_lines.append({
+                'type': 'T_matrix',
+                'content': hop.T,
+                'indent_len': len(T_prefix)
+            })
+        else:
+            output_lines.append({
+                'type': 'T_none',
+                'content': T_prefix + "None",
+                'indent_len': len(T_prefix)
+            })
+
+        # Process children
+        if vertex.children:
+            # Determine new prefix for children
+            if vertex.is_root:
+                new_prefix = "    "
+            else:
+                extension = "    " if is_last else "|   "
+                new_prefix = prefix + extension
+
+            print(f"  New prefix for children: '{new_prefix}'")
+
+            for i, child in enumerate(vertex.children):
+                is_last_child = (i == len(vertex.children) - 1)
+                generate_tree_structure(child, new_prefix, is_last_child, output_lines, level + 1)
+
+        return output_lines
+
+    # Generate tree structure with debug output
+    print("=== Generating tree structure ===")
+    output_lines = generate_tree_structure(root)
+    print("=== Done ===\n")
+
+    # Print first few lines to check
+    print("First few output lines:")
+    for i, line in enumerate(output_lines[:10]):
+        if line['type'] == 'tree_line':
+            print(f"{i}: {line['content']}")
+
+    # Build LaTeX document
+    latex_lines = []
+
+    # Preamble
+    latex_lines.append(r"\documentclass[10pt]{article}")
+    latex_lines.append(r"\usepackage[margin=0.5in, landscape, a3paper]{geometry}")
+    latex_lines.append(r"\usepackage{amsmath}")
+    latex_lines.append(r"\usepackage{amssymb}")
+    latex_lines.append(r"\usepackage{xcolor}")
+    latex_lines.append(r"")
+    latex_lines.append(r"\begin{document}")
+    latex_lines.append(r"")
+    latex_lines.append(r"\pagestyle{empty}")
+    latex_lines.append(r"")
+
+    # Title
+    if tree_idx is not None:
+        latex_lines.append(rf"\section*{{Tree {tree_idx}}}")
+    else:
+        latex_lines.append(r"\section*{Tree Structure}")
+    latex_lines.append(r"")
+
+    # Content
+    latex_lines.append(r"\begin{flushleft}")
+    latex_lines.append(r"\small")
+
+    for line_data in output_lines:
+        line_type = line_data['type']
+        content = line_data['content']
+        indent_len = line_data['indent_len']
+
+        # Calculate indent in cm
+        indent_cm = indent_len * 0.15
+
+        if line_type == 'tree_line':
+            # Tree structure line - escape special characters
+            escaped_content = content.replace('_', r'\_').replace('<', r'$<$').replace('>', r'$>$').replace('^',
+                                                                                                            r'\^{}')
+            latex_lines.append(r"\noindent")
+            latex_lines.append(r"\texttt{" + escaped_content + r"}")
+            latex_lines.append(r"\\")
+
+        elif line_type == 'T_label':
+            # T = label
+            latex_lines.append(r"\noindent")
+            latex_lines.append(r"\hspace*{" + str(indent_cm) + r"cm}")
+            latex_lines.append(r"\texttt{T =}")
+            latex_lines.append(r"\\")
+
+        elif line_type == 'T_matrix':
+            # T matrix (sympy matrix)
+            latex_lines.append(r"\noindent")
+            latex_lines.append(r"\hspace*{" + str(indent_cm) + r"cm}")
+            latex_lines.append(r"$\displaystyle " + sympy_to_latex(content) + r"$")
+            latex_lines.append(r"\\[0.2cm]")
+
+        elif line_type == 'T_none':
+            # T = None
+            latex_lines.append(r"\noindent")
+            latex_lines.append(r"\hspace*{" + str(indent_cm) + r"cm}")
+            latex_lines.append(r"\texttt{None}")
+            latex_lines.append(r"\\[0.2cm]")
+
+    latex_lines.append(r"\end{flushleft}")
+    latex_lines.append(r"")
+    latex_lines.append(r"\end{document}")
+
+    # Join
+    latex_code = "\n".join(latex_lines)
+
+    # Save if requested
+    if filename:
+        tex_filename = filename if filename.endswith('.tex') else f"{filename}.tex"
+        with open(tex_filename, 'w') as f:
+            f.write(latex_code)
+        print(f"LaTeX code saved to {tex_filename}")
+        print(f"Compile with: pdflatex {tex_filename}")
+
+    return latex_code
+
+
+def generate_latex_tree_ascii_style(root, tree_idx=None, filename=None):
+    """
+    Generate LaTeX code that closely mimics ASCII tree output
+    Uses ASCII-compatible characters for tree drawing
+
+    Args:
+        root: Root vertex of the tree
+        tree_idx: Optional tree index for labeling
+        filename: Optional filename to save the LaTeX code
+
+    Returns:
+        str: LaTeX code as a string
+    """
+
+    def sympy_to_latex(matrix):
+        """Convert sympy matrix to LaTeX"""
+        if matrix is None:
+            return r"\text{None}"
+        return sp.latex(matrix)
+
+    def generate_tree_structure(vertex, prefix="", is_last=True, output_lines=None):
+        """Generate tree structure similar to print_tree_with_T"""
+        if output_lines is None:
+            output_lines = []
+
+        # Get node information
+        hop = vertex.hopping
+        from_cell = [hop.from_atom.n0, hop.from_atom.n1, hop.from_atom.n2]
+        to_atom_name = hop.to_atom.atom_name
+        from_atom_name = hop.from_atom.atom_name
+        distance = np.linalg.norm(hop.from_atom.cart_coord - hop.to_atom.cart_coord)
+
+        # Determine connector (ASCII-compatible)
+        if vertex.is_root:
+            connector = "ROOT "
+            node_label = ""
+        else:
+            connector = "+-- " if is_last else "|-- "
+            node_label = f"CHILD ({vertex.type})"
+
+        # Build node description
+        if vertex.is_root:
+            node_desc = (f"{connector}| Op={hop.operation_idx:2d} | "
+                         f"{to_atom_name}<-{from_atom_name} | "
+                         f"Cell=[{from_cell[0]:2d},{from_cell[1]:2d},{from_cell[2]:2d}] | "
+                         f"Dist={distance:.4f}")
+        else:
+            node_desc = (f"{connector}{node_label} | Op={hop.operation_idx:2d} | "
+                         f"{to_atom_name}<-{from_atom_name} | "
+                         f"Cell=[{from_cell[0]:2d},{from_cell[1]:2d},{from_cell[2]:2d}] | "
+                         f"Dist={distance:.4f}")
+
+        # Store prefix length and node description separately
+        output_lines.append({
+            'type': 'tree_line',
+            'prefix': prefix,
+            'content': node_desc,
+            'indent_len': len(prefix)
+        })
+
+        # Determine prefix for T matrix display
+        if vertex.is_root:
+            T_prefix = "    "
+        else:
+            T_prefix = prefix + ("    " if is_last else "|   ")
+
+        output_lines.append({
+            'type': 'T_label',
+            'prefix': T_prefix,
+            'content': "T =",
+            'indent_len': len(T_prefix)
+        })
+
+        if hop.T is not None:
+            output_lines.append({
+                'type': 'T_matrix',
+                'content': hop.T,
+                'indent_len': len(T_prefix)
+            })
+        else:
+            output_lines.append({
+                'type': 'T_none',
+                'prefix': T_prefix,
+                'content': "None",
+                'indent_len': len(T_prefix)
+            })
+
+        # Process children
+        if vertex.children:
+            # Determine new prefix for children
+            if vertex.is_root:
+                new_prefix = "    "
+            else:
+                extension = "    " if is_last else "|   "
+                new_prefix = prefix + extension
+
+            for i, child in enumerate(vertex.children):
+                is_last_child = (i == len(vertex.children) - 1)
+                generate_tree_structure(child, new_prefix, is_last_child, output_lines)
+
+        return output_lines
+
+    # Generate tree structure
+    output_lines = generate_tree_structure(root)
+
+    # Build LaTeX document
+    latex_lines = []
+
+    # Preamble
+    latex_lines.append(r"\documentclass[10pt]{article}")
+    latex_lines.append(r"\usepackage[margin=0.5in, landscape, a3paper]{geometry}")
+    latex_lines.append(r"\usepackage{amsmath}")
+    latex_lines.append(r"\usepackage{amssymb}")
+    latex_lines.append(r"\usepackage{xcolor}")
+    latex_lines.append(r"\usepackage{verbatim}")
+    latex_lines.append(r"")
+    latex_lines.append(r"% Make spaces visible in texttt")
+    latex_lines.append(r"\makeatletter")
+    latex_lines.append(r"\newcommand{\preservespaces}[1]{%")
+    latex_lines.append(r"  \begingroup")
+    latex_lines.append(r"  \ttfamily")
+    latex_lines.append(r"  \@activespaces")
+    latex_lines.append(r"  #1%")
+    latex_lines.append(r"  \endgroup")
+    latex_lines.append(r"}")
+    latex_lines.append(r"\newcommand{\@activespaces}{%")
+    latex_lines.append(r"  \catcode`\ =\active")
+    latex_lines.append(r"  \def {\char32}%")
+    latex_lines.append(r"}")
+    latex_lines.append(r"\makeatother")
+    latex_lines.append(r"")
+    latex_lines.append(r"\begin{document}")
+    latex_lines.append(r"")
+    latex_lines.append(r"\pagestyle{empty}")
+    latex_lines.append(r"")
+
+    # Title
+    if tree_idx is not None:
+        latex_lines.append(rf"\section*{{Tree {tree_idx}}}")
+    else:
+        latex_lines.append(r"\section*{Tree Structure}")
+    latex_lines.append(r"")
+
+    # Content
+    latex_lines.append(r"\begin{flushleft}")
+    latex_lines.append(r"\small")
+
+    for line_data in output_lines:
+        line_type = line_data['type']
+        indent_len = line_data['indent_len']
+
+        # Calculate indent in cm (each space = 0.15cm)
+        indent_cm = indent_len * 0.15
+
+        if line_type == 'tree_line':
+            # Tree structure line - use hspace for indentation
+            prefix = line_data['prefix']
+            content = line_data['content']
+            escaped_content = content.replace('_', r'\_').replace('<', r'$<$').replace('>', r'$>$').replace('^',
+                                                                                                            r'\^{}')
+
+            latex_lines.append(r"\noindent")
+            if len(prefix) > 0:
+                latex_lines.append(r"\hspace*{" + str(indent_cm) + r"cm}")
+            latex_lines.append(r"\texttt{" + escaped_content + r"}")
+            latex_lines.append(r"\\")
+
+        elif line_type == 'T_label':
+            # T = label
+            prefix = line_data['prefix']
+            latex_lines.append(r"\noindent")
+            latex_lines.append(r"\hspace*{" + str(indent_cm) + r"cm}")
+            latex_lines.append(r"\texttt{T =}")
+            latex_lines.append(r"\\")
+
+        elif line_type == 'T_matrix':
+            # T matrix (sympy matrix)
+            latex_lines.append(r"\noindent")
+            latex_lines.append(r"\hspace*{" + str(indent_cm) + r"cm}")
+            latex_lines.append(r"$\displaystyle " + sympy_to_latex(line_data['content']) + r"$")
+            latex_lines.append(r"\\[0.2cm]")
+
+        elif line_type == 'T_none':
+            # T = None
+            prefix = line_data['prefix']
+            latex_lines.append(r"\noindent")
+            latex_lines.append(r"\hspace*{" + str(indent_cm) + r"cm}")
+            latex_lines.append(r"\texttt{None}")
+            latex_lines.append(r"\\[0.2cm]")
+
+    latex_lines.append(r"\end{flushleft}")
+    latex_lines.append(r"")
+    latex_lines.append(r"\end{document}")
+
+    # Join
+    latex_code = "\n".join(latex_lines)
+
+    # Save if requested
+    if filename:
+        tex_filename = filename if filename.endswith('.tex') else f"{filename}.tex"
+        with open(tex_filename, 'w') as f:
+            f.write(latex_code)
+        print(f"LaTeX code saved to {tex_filename}")
+        print(f"Compile with: pdflatex {tex_filename}")
+
+    return latex_code
 
 def print_tree(root, prefix="", is_last=True, show_details=True):
     """Print a tree structure in a visual format"""
@@ -2132,6 +2537,187 @@ def print_tree_with_T(root, prefix="", is_last=True, show_T=True):
             print_tree_with_T(child, new_prefix, is_last_child, show_T)
 
 
+def generate_latex_tree(root, tree_idx=None, filename=None):
+    """
+    Generate LaTeX code to visualize tree structure with T matrices
+
+    Args:
+        root: Root vertex of the tree
+        tree_idx: Optional tree index for labeling
+        filename: Optional filename to save the LaTeX code (without .tex extension)
+
+    Returns:
+        str: LaTeX code as a string
+    """
+
+    def escape_latex(text):
+        """Escape special LaTeX characters in text"""
+        replacements = {
+            '_': r'\_',
+            '^': r'\^{}',
+            '{': r'\{',
+            '}': r'\}',
+            '&': r'\&',
+            '%': r'\%',
+            '$': r'\$',
+            '#': r'\#',
+            '~': r'\~{}',
+            '\\': r'\textbackslash{}'
+        }
+        for old, new in replacements.items():
+            text = text.replace(old, new)
+        return text
+
+    def sympy_to_latex(matrix):
+        """Convert sympy matrix to LaTeX"""
+        if matrix is None:
+            return r"\text{None}"
+        return sp.latex(matrix)
+
+    def collect_tree_data(vertex, level=0, is_last=True, prefix_lines=None):
+        """
+        Recursively collect tree data for LaTeX generation
+
+        Returns list of dicts with node information
+        """
+        if prefix_lines is None:
+            prefix_lines = []
+
+        nodes = []
+
+        # Get node information
+        hop = vertex.hopping
+        from_cell = [hop.from_atom.n0, hop.from_atom.n1, hop.from_atom.n2]
+        to_atom_name = hop.to_atom.atom_name
+        from_atom_name = hop.from_atom.atom_name
+        distance = np.linalg.norm(hop.from_atom.cart_coord - hop.to_atom.cart_coord)
+
+        # Node label
+        if vertex.is_root:
+            node_type = "ROOT"
+        else:
+            node_type = f"CHILD ({vertex.type})"
+
+        # Create node info
+        node_info = {
+            'level': level,
+            'is_root': vertex.is_root,
+            'is_last': is_last,
+            'node_type': node_type,
+            'op_idx': hop.operation_idx,
+            'to_atom': to_atom_name,
+            'from_atom': from_atom_name,
+            'cell': from_cell,
+            'distance': distance,
+            'T': hop.T,
+            'prefix_lines': prefix_lines.copy()
+        }
+
+        nodes.append(node_info)
+
+        # Process children
+        if vertex.children:
+            for i, child in enumerate(vertex.children):
+                is_last_child = (i == len(vertex.children) - 1)
+
+                # Update prefix lines for children
+                new_prefix_lines = prefix_lines.copy()
+                if level > 0:
+                    if is_last:
+                        new_prefix_lines.append(False)  # No vertical line needed
+                    else:
+                        new_prefix_lines.append(True)  # Vertical line needed
+
+                child_nodes = collect_tree_data(child, level + 1, is_last_child, new_prefix_lines)
+                nodes.extend(child_nodes)
+
+        return nodes
+
+    # Collect all node data
+    all_nodes = collect_tree_data(root)
+
+    # Start building LaTeX document
+    latex_lines = []
+
+    # Document preamble
+    latex_lines.append(r"\documentclass[12pt]{article}")
+    latex_lines.append(r"\usepackage[margin=1in]{geometry}")
+    latex_lines.append(r"\usepackage{amsmath}")
+    latex_lines.append(r"\usepackage{amssymb}")
+    latex_lines.append(r"\usepackage{forest}")
+    latex_lines.append(r"\usepackage{tikz}")
+    latex_lines.append(r"\usepackage{xcolor}")
+    latex_lines.append(r"\usetikzlibrary{positioning, shapes, arrows}")
+    latex_lines.append(r"")
+    latex_lines.append(r"\begin{document}")
+    latex_lines.append(r"")
+
+    # Title
+    if tree_idx is not None:
+        latex_lines.append(rf"\section*{{Tree {tree_idx} Structure with Hopping Matrices}}")
+    else:
+        latex_lines.append(r"\section*{Tree Structure with Hopping Matrices}")
+    latex_lines.append(r"")
+
+    # Create each node as a subsection with its T matrix
+    for idx, node in enumerate(all_nodes):
+        # Node header
+        latex_lines.append(r"\subsection*{")
+
+        # Add indentation based on level
+        indent = r"\hspace*{" + str(node['level'] * 1.5) + "cm}"
+        latex_lines.append(indent)
+
+        # Node description
+        if node['is_root']:
+            latex_lines.append(r"\textbf{ROOT} ")
+        else:
+            latex_lines.append(rf"\textbf{{{node['node_type']}}} ")
+
+        latex_lines.append(r"}")
+        latex_lines.append(r"")
+
+        # Node details
+        latex_lines.append(r"\noindent")
+        latex_lines.append(indent)
+        latex_lines.append(r"\begin{itemize}")
+        latex_lines.append(rf"\item Operation index: ${node['op_idx']}$")
+        latex_lines.append(rf"\item Hopping: ${node['to_atom']} \leftarrow {node['from_atom']}$")
+        latex_lines.append(rf"\item Cell: $[{node['cell'][0]}, {node['cell'][1]}, {node['cell'][2]}]$")
+        latex_lines.append(rf"\item Distance: ${node['distance']:.4f}$")
+        latex_lines.append(r"\end{itemize}")
+        latex_lines.append(r"")
+
+        # T matrix
+        latex_lines.append(r"\noindent")
+        latex_lines.append(indent)
+        if node['T'] is not None:
+            latex_lines.append(r"\textbf{Hopping Matrix $T$:}")
+            latex_lines.append(r"\begin{equation*}")
+            latex_lines.append(r"T = " + sympy_to_latex(node['T']))
+            latex_lines.append(r"\end{equation*}")
+        else:
+            latex_lines.append(r"\textbf{Hopping Matrix:} $T = \text{None}$")
+
+        latex_lines.append(r"")
+        latex_lines.append(r"\vspace{0.5cm}")
+        latex_lines.append(r"")
+
+    # End document
+    latex_lines.append(r"\end{document}")
+
+    # Join all lines
+    latex_code = "\n".join(latex_lines)
+
+    # Save to file if filename provided
+    if filename:
+        tex_filename = filename if filename.endswith('.tex') else f"{filename}.tex"
+        with open(tex_filename, 'w') as f:
+            f.write(latex_code)
+        print(f"LaTeX code saved to {tex_filename}")
+        print(f"Compile with: pdflatex {tex_filename}")
+
+    return latex_code
 # ==============================================================================
 # Helper function: Verify constraints for a vertex
 # ==============================================================================
@@ -2199,33 +2785,56 @@ def verify_constraint(vertex, verbose=True, tolerance=1e-5):
 
         # Check if all coefficients are below tolerance
         is_satisfied = True
+        max_coeff = 0.0
+
         for i in range(diff_simplified.shape[0]):
             for j in range(diff_simplified.shape[1]):
                 element = diff_simplified[i, j]
 
-                # Extract all numerical coefficients from the expression
-                if element != 0:
-                    # Get all numerical coefficients
-                    coeffs = []
-                    if element.is_Number:
-                        coeffs.append(abs(float(element)))
-                    else:
-                        # Extract coefficients from all terms
-                        for term in sp.Add.make_args(element):
-                            if term.is_Number:
-                                coeffs.append(abs(float(term)))
-                            else:
-                                # Get coefficient of the term
-                                coeff = term.as_coeff_Mul()[0]
-                                try:
-                                    coeffs.append(abs(float(coeff)))
-                                except (TypeError, ValueError):
-                                    # If can't convert to float, assume it's symbolic
-                                    is_satisfied = False
-                                    break
+                # Skip if element is exactly zero
+                if element == 0:
+                    continue
 
-                    # Check if any coefficient exceeds tolerance
-                    if coeffs and max(coeffs) > tolerance:
+                # Extract all numerical coefficients from the expression
+                coeffs = []
+
+                if element.is_Number:
+                    # Element is a pure number
+                    try:
+                        coeff_val = abs(float(element))
+                        coeffs.append(coeff_val)
+                    except (TypeError, ValueError):
+                        # Can't convert to float - treat as symbolic
+                        is_satisfied = False
+                        break
+                else:
+                    # Element is an expression - extract all numerical coefficients
+                    for term in sp.Add.make_args(element):
+                        if term.is_Number:
+                            # Term is a pure number
+                            try:
+                                coeff_val = abs(float(term))
+                                coeffs.append(coeff_val)
+                            except (TypeError, ValueError):
+                                is_satisfied = False
+                                break
+                        else:
+                            # Term has a coefficient
+                            coeff, _ = term.as_coeff_Mul()
+                            try:
+                                coeff_val = abs(float(coeff))
+                                coeffs.append(coeff_val)
+                            except (TypeError, ValueError):
+                                # If can't convert to float, it's symbolic
+                                is_satisfied = False
+                                break
+
+                # Check if any coefficient exceeds tolerance
+                if coeffs:
+                    element_max_coeff = max(coeffs)
+                    max_coeff = max(max_coeff, element_max_coeff)
+
+                    if element_max_coeff > tolerance:
                         is_satisfied = False
                         break
 
@@ -2236,17 +2845,18 @@ def verify_constraint(vertex, verbose=True, tolerance=1e-5):
             violations.append({
                 'op_id': op_id,
                 'stab_idx': stab_idx,
-                'diff_matrix': diff_simplified
+                'diff_matrix': diff_simplified,
+                'max_coeff': max_coeff
             })
 
             if verbose:
                 print(f"  ❌ Stabilizer {stab_idx} (op={op_id}): VIOLATED")
                 print(f"     Difference matrix:")
                 sp.pprint(diff_simplified)
-                print(f"     (Max coefficient above tolerance {tolerance})")
+                print(f"     Max coefficient: {max_coeff:.2e} (tolerance: {tolerance:.2e})")
         else:
             if verbose:
-                print(f"  ✓ Stabilizer {stab_idx} (op={op_id}): satisfied")
+                print(f"  ✓ Stabilizer {stab_idx} (op={op_id}): satisfied (max coeff: {max_coeff:.2e})")
 
     # Summary
     satisfied = (len(violations) == 0)
@@ -2265,8 +2875,6 @@ def verify_constraint(vertex, verbose=True, tolerance=1e-5):
         'num_violations': len(violations),
         'violations': violations
     }
-
-
 # ==============================================================================
 # STEP 14: Example usage - analyze a single tree
 # ==============================================================================
@@ -2274,7 +2882,7 @@ print("\n" + "=" * 80)
 print("EXAMPLE: ANALYZING A SINGLE TREE")
 print("=" * 80)
 
-tree_idx = 10
+tree_idx = 0
 root = all_roots_sorted[tree_idx]
 
 # Verify atoms have representations
@@ -2325,5 +2933,10 @@ print("=" * 80)
 verify_result = verify_constraint(root, verbose=True)
 
 
-
-# print(space_group_matrices_cartesian)
+# Generate LaTeX for tree 2 (simple version)
+latex_code = generate_latex_tree_ascii_style(root, tree_idx=2, filename=f"tree_{tree_idx}_simple")
+# Save to txt file
+# with open(f"tree_{tree_idx}_simple.txt", "w") as f:
+#     f.write(latex_code)
+#
+# print(f"LaTeX code saved to tree_{tree_idx}_simple.txt")
