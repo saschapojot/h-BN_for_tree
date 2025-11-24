@@ -1,0 +1,313 @@
+@startuml data_structures_with_stabilizer
+
+' ============================================
+' Tree and Forest Structure + Builder + Stabilizer Helper
+' ============================================
+
+' Force horizontal layout
+left to right direction
+
+skinparam classAttributeIconSize 0
+skinparam backgroundColor #FFFFFF
+skinparam roundcorner 5
+skinparam shadowing false
+skinparam nodesep 120
+skinparam ranksep 100
+
+' ============================================
+' Basic Data Structures (Foundation)
+' ============================================
+
+class AtomIndex <<ValueObject>> {
+  -wyckoff_position : int
+  -atom_number : int
+  -n0 : int
+  -n1 : int
+  -n2 : int
+  __
+  +to_zeta_index(n0, n1, n2) : (int, int)
+  +equals(other) : bool
+  +hash() : int
+}
+
+class Hopping <<ValueObject>> {
+  -to_atom : AtomIndex
+  -from_atom : AtomIndex
+  -space_group_element_id : int
+  __
+  +conjugate() : (from_atom, to_atom)
+  +distance(positions) : float
+  +get_displacement() : Vector3D
+}
+
+class EquivalenceClass <<Aggregate>> {
+  -id : (int, int)
+  -hoppings : List<Hopping>
+  -reference_hopping : Hopping
+  -distance : float
+  __
+  +add_hopping(h : Hopping) : void
+  +size() : int
+  +contains(h : Hopping) : bool
+}
+
+' ============================================
+' Helper Classes
+' ============================================
+
+class SymmetryHelper <<Service>> {
+  -crystal : CrystalStructure
+  __
+  +compute_stabilizer(atom : AtomIndex) : List<int>
+  +compute_stabilizer_subset(center : AtomIndex, neighbor : AtomIndex) : List<int>
+  +apply_symmetry(atom : AtomIndex, group_element_id : int) : AtomIndex
+  __
+  **Helper for symmetry operations**
+  Computes stabilizer groups
+}
+
+' ============================================
+' Builder/Algorithm Classes
+' ============================================
+
+class EquivalenceClassBuilder <<Service>> {
+  -crystal : CrystalStructure
+  -cutoff_radius : float
+  -symmetry_helper : SymmetryHelper
+  __
+  +find_atoms_within_cutoff(center : AtomIndex) : List<AtomIndex>
+  +partition_equivalence_classes(center : AtomIndex, neighbors : List<AtomIndex>) : List<EquivalenceClass>
+  +build_all_equivalence_classes() : List<EquivalenceClass>
+  __
+  **Explanation: PDF Section II**
+  Builds all equivalence classes
+  for unit cell [0,0,0]
+}
+
+class ForestBuilder <<Service>> {
+  -equivalence_classes : List<EquivalenceClass>
+  -crystal : CrystalStructure
+  -symmetry_helper : SymmetryHelper
+  __
+  +build_forest() : Forest
+  +find_parent_vertex(equiv_class : EquivalenceClass) : Vertex?
+  +create_root_vertex(equiv_class : EquivalenceClass) : Vertex
+  +create_child_vertex(equiv_class : EquivalenceClass, parent : Vertex) : Vertex
+  __
+  **Algorithm: PDF Section III**
+  Builds forest graph structure
+}
+
+' ============================================
+' Graph Structure
+' ============================================
+
+enum VertexType <<Enum>> {
+  ROOT
+  CHILD_LINEAR
+  CHILD_HERMITIAN
+}
+
+class Vertex <<Entity>> {
+  -id : (int, int)
+  -equivalence_class : EquivalenceClass
+  -vertex_type : VertexType
+  -parent_id : (int, int)?
+  -independent_params : List<(int, int)>
+  -stabilizer_subset : List<int>
+  -constraint_matrix : Matrix
+  __
+  +is_root() : bool
+  +is_child() : bool
+  +get_num_params() : int
+}
+
+class Edge <<Entity>> {
+  -parent_vertex_id : (int, int)
+  -child_vertex_id : (int, int)
+  -parent_hopping : Hopping
+  -child_hopping : Hopping
+  -connecting_group_element_id : int?
+  -is_hermitian : bool
+  __
+  +get_transformation_type() : string
+}
+
+class Tree <<Aggregate>> {
+  -root : Vertex
+  -vertices : Dict<(int,int), Vertex>
+  -edges : List<Edge>
+  __
+  +add_vertex(v : Vertex, e : Edge) : void
+  +get_depth() : int
+  +get_all_vertices() : List<Vertex>
+}
+
+class Forest <<Aggregate>> {
+  -trees : List<Tree>
+  -vertex_lookup : Dict<(int,int), Tree>
+  __
+  +add_tree(t : Tree) : void
+  +find_tree_containing(id) : Tree
+  +get_all_root_vertices() : List<Vertex>
+  +get_total_params() : int
+}
+
+' ============================================
+' Relationships - Bottom to Top
+' ============================================
+
+' Level 1: Hopping built from AtomIndex
+Hopping *-- "1" AtomIndex : to_atom
+Hopping *-- "1" AtomIndex : from_atom
+
+' Level 2: EquivalenceClass aggregates Hopping
+EquivalenceClass o-- "1..*" Hopping : contains
+
+' Level 3: SymmetryHelper is used by builders
+EquivalenceClassBuilder --> "1" SymmetryHelper : uses
+ForestBuilder --> "1" SymmetryHelper : uses
+
+' Level 4: Builder creates EquivalenceClasses
+EquivalenceClassBuilder ..> AtomIndex : uses
+EquivalenceClassBuilder ..> Hopping : creates
+EquivalenceClassBuilder ..> EquivalenceClass : creates
+
+' Level 5: Vertex wraps EquivalenceClass
+Vertex *-- "1" EquivalenceClass : contains
+Vertex --> "1" VertexType : has type
+
+' Level 6: ForestBuilder creates Forest
+ForestBuilder ..> EquivalenceClass : uses
+ForestBuilder ..> Vertex : creates
+ForestBuilder ..> Edge : creates
+ForestBuilder ..> Tree : creates
+ForestBuilder ..> Forest : creates
+
+' Level 7: Edge connects Vertices
+Edge --> "1" Vertex : parent
+Edge --> "1" Vertex : child
+Edge ..> Hopping : references
+
+' Level 8: Tree contains Vertices and Edges
+Tree *-- "1" Vertex : root
+Tree o-- "1..*" Vertex : vertices
+Tree o-- "0..*" Edge : edges
+
+' Level 9: Forest contains Trees
+Forest o-- "1..*" Tree : contains
+
+' ============================================
+' Notes
+' ============================================
+
+note right of SymmetryHelper
+  **SymmetryHelper** computes stabilizer groups
+  
+  **Method 1: compute_stabilizer(atom)**
+  • Input: atom in unit cell [0,0,0]
+  • Output: List of space group element IDs
+  • Algorithm:
+    1. For each g in space group:
+       a. Apply g to atom
+       b. If g(atom) = atom (same position):
+          - Add g to stabilizer list
+    2. Return stabilizer list
+  
+  **From PDF:**
+  Stabilizer = {g ∈ G : g(atom) = atom}
+  
+  **Method 2: compute_stabilizer_subset(center, neighbor)**
+  • Input: center atom and neighbor atom
+  • Output: δ_ms = subset of stabilizer
+  • Algorithm:
+    1. Get stabilizer of center: F_j
+    2. Filter for g where:
+       - g(center) = center (already in F_j)
+       - g(neighbor) = neighbor (additional constraint)
+    3. Return filtered list
+  
+  **From PDF (Section III, Step 15):**
+  δ_ms = {g ∈ Stab(center) : g(neighbor) = neighbor}
+  This is the stabilizer subset for computing constraints
+  
+  **Method 3: apply_symmetry(atom, group_element_id)**
+  • Input: atom and space group element ID
+  • Output: transformed atom
+  • Used for checking equivalences
+  
+  **Example:**
+  helper = SymmetryHelper(crystal)
+  stabilizer = helper.compute_stabilizer(center_atom)
+  # Returns: [0, 3, 5, 7] (element IDs that fix atom)
+end note
+
+note right of EquivalenceClassBuilder
+  **EquivalenceClassBuilder** implements Algorithm from PDF Section II
+  
+  **Uses SymmetryHelper for:**
+  • Computing stabilizer F_j of center atom
+  • Applying symmetries to partition neighbors
+  
+  **Method 2: partition_equivalence_classes(center, neighbors)**
+  Algorithm (revised):
+    1. Group neighbors by distance (tolerance)
+    2. stabilizer = symmetry_helper.compute_stabilizer(center)
+    3. For each distance shell:
+       a. Apply symmetries from stabilizer to partition shell
+       b. Create EquivalenceClass for each partition
+       c. Set reference_hopping for each class
+  
+  **Example:**
+  builder = EquivalenceClassBuilder(crystal, cutoff=10.0)
+  # builder.symmetry_helper is used internally
+  all_classes = builder.build_all_equivalence_classes()
+end note
+
+note right of ForestBuilder
+  **ForestBuilder** implements Algorithm from PDF Section III
+  
+  **Uses SymmetryHelper for:**
+  • Computing stabilizer_subset (δ_ms) for ROOT vertices
+  • This δ_ms is used to build constraint_matrix
+  
+  **create_root_vertex(equiv_class):**
+  Algorithm:
+    1. Create new Vertex with type=ROOT
+    2. reference = equiv_class.reference_hopping
+    3. center = reference.from_atom
+    4. neighbor = reference.to_atom
+    5. δ_ms = symmetry_helper.compute_stabilizer_subset(center, neighbor)
+    6. vertex.stabilizer_subset = δ_ms
+    7. Build constraint_matrix from δ_ms
+    8. Compute independent_params via Gaussian elimination
+    9. Return vertex
+  
+  **This δ_ms is critical for:**
+  - Building correct symmetry constraints
+  - Finding independent parameters
+end note
+
+note bottom of Forest
+  **Complete Workflow with SymmetryHelper:**
+  
+  Step 1: Create helper
+  symmetry_helper = SymmetryHelper(crystal)
+  
+  Step 2: Build Equivalence Classes
+  builder = EquivalenceClassBuilder(crystal, cutoff, symmetry_helper)
+  equiv_classes = builder.build_all_equivalence_classes()
+  
+  Step 3: Build Forest Graph
+  forest_builder = ForestBuilder(equiv_classes, crystal, symmetry_helper)
+  forest = forest_builder.build_forest()
+  
+  Step 4: Extract Parameters
+  total_params = forest.get_total_params()
+  
+  **SymmetryHelper is shared:**
+  Both builders use the same helper instance
+  for consistent symmetry operations
+end note
+
+@enduml

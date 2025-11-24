@@ -1,0 +1,177 @@
+@startuml class_containment_structure
+
+' ============================================
+' Class Containment and Composition Structure
+' Shows how classes are nested and contained
+' ============================================
+
+top to bottom direction
+scale 1.5
+
+skinparam classAttributeIconSize 0
+skinparam backgroundColor #FFFFFF
+skinparam roundcorner 5
+skinparam shadowing false
+skinparam nodesep 100
+skinparam ranksep 120
+skinparam padding 20
+
+' ============================================
+' Foundation Value Objects
+' ============================================
+
+class AtomIndex <<ValueObject>> {
+  -wyckoff_position : int
+  -atom_number : int
+  -n0, n1, n2 : int
+}
+
+class Hopping <<ValueObject>> {
+  -to_atom : AtomIndex
+  -from_atom : AtomIndex
+  -space_group_element_id : int
+}
+
+' ============================================
+' Equivalence Class (contains Hoppings)
+' ============================================
+
+class EquivalenceClass <<Aggregate>> {
+  -id : (int, int)
+  -hoppings : List<Hopping>
+  -reference_hopping : Hopping
+  -distance : float
+}
+
+' ============================================
+' Vertex (contains EquivalenceClass)
+' ============================================
+
+enum VertexType <<Enum>> {
+  ROOT
+  CHILD_LINEAR
+  CHILD_HERMITIAN
+}
+
+class Vertex <<Entity>> {
+  -id : (int, int)
+  -equivalence_class : EquivalenceClass
+  -vertex_type : VertexType
+  -parent_id : (int, int)?
+  -independent_params : List<(int, int)>
+  -stabilizer_subset : List<int>
+  -constraint_matrix : Matrix
+}
+
+' ============================================
+' Edge (references Vertices)
+' ============================================
+
+class Edge <<Entity>> {
+  -parent_vertex_id : (int, int)
+  -child_vertex_id : (int, int)
+  -parent_hopping : Hopping
+  -child_hopping : Hopping
+  -connecting_group_element_id : int?
+  -is_hermitian : bool
+}
+
+' ============================================
+' Tree (contains Vertices and Edges)
+' ============================================
+
+class Tree <<Aggregate>> {
+  -root : Vertex
+  -vertices : Dict<(int,int), Vertex>
+  -edges : List<Edge>
+}
+
+' ============================================
+' Forest (contains Trees)
+' ============================================
+
+class Forest <<Aggregate>> {
+  -trees : List<Tree>
+  -vertex_lookup : Dict<(int,int), Tree>
+}
+
+' ============================================
+' SymmetryAnalyzer (orchestrates everything)
+' ============================================
+
+class SymmetryAnalyzer <<Service>> {
+  -crystal : CrystalStructure
+  -cutoff_radius : float
+  -equivalence_classes : List<EquivalenceClass>
+  -forest : Forest
+  -stabilizers_cache : Dict<AtomIndex, List<int>>
+}
+
+' ============================================
+' Analysis Result (contains Forest and Parameters)
+' ============================================
+
+class Parameter <<ValueObject>> {
+  -id : (int, int)
+  -wyckoff_positions : (int, int)
+  -orbital_indices : (int, int)
+  -description : string
+}
+
+class AnalysisResult <<ValueObject>> {
+  -forest : Forest
+  -total_independent_params : int
+  -parameters : List<Parameter>
+}
+
+' ============================================
+' Containment Relationships
+' Use composition (filled diamond) for "contains/owns"
+' ============================================
+
+' Level 1: Hopping contains AtomIndex
+Hopping *-- "2" AtomIndex : "contains\n(to_atom, from_atom)"
+
+' Level 2: EquivalenceClass contains Hoppings
+EquivalenceClass *-- "1..*" Hopping : "contains\n(hoppings list)"
+EquivalenceClass *-- "1" Hopping : "contains\n(reference)"
+
+' Level 3: Vertex contains EquivalenceClass
+Vertex *-- "1" EquivalenceClass : "contains"
+Vertex *-- "1" VertexType : "contains"
+
+' Level 3: Edge references Hoppings
+Edge o-- "2" Hopping : "references\n(parent/child hopping)"
+
+' Level 4: Tree contains Vertices and Edges
+Tree *-- "1" Vertex : "contains\n(root)"
+Tree *-- "1..*" Vertex : "contains\n(vertices dict)"
+Tree *-- "0..*" Edge : "contains\n(edges list)"
+
+' Level 5: Forest contains Trees
+Forest *-- "1..*" Tree : "contains\n(trees list)"
+
+' Level 6: SymmetryAnalyzer contains Forest and EquivalenceClasses
+SymmetryAnalyzer *-- "0..1" Forest : "contains\n(after analysis)"
+SymmetryAnalyzer *-- "0..*" EquivalenceClass : "contains\n(intermediate results)"
+
+' Level 7: AnalysisResult contains Forest and Parameters
+AnalysisResult *-- "1" Forest : "contains"
+AnalysisResult *-- "0..*" Parameter : "contains"
+
+' SymmetryAnalyzer produces AnalysisResult
+SymmetryAnalyzer ..> AnalysisResult : "produces"
+
+' ============================================
+' Layout hints
+' ============================================
+
+AtomIndex -[hidden]down-> Hopping
+Hopping -[hidden]down-> EquivalenceClass
+EquivalenceClass -[hidden]down-> Vertex
+Vertex -[hidden]down-> Tree
+Tree -[hidden]down-> Forest
+Forest -[hidden]down-> SymmetryAnalyzer
+SymmetryAnalyzer -[hidden]down-> AnalysisResult
+
+@enduml

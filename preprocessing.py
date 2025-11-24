@@ -2882,7 +2882,7 @@ print("\n" + "=" * 80)
 print("EXAMPLE: ANALYZING A SINGLE TREE")
 print("=" * 80)
 
-tree_idx = 0
+tree_idx =2
 root = all_roots_sorted[tree_idx]
 
 # Verify atoms have representations
@@ -2940,3 +2940,6 @@ latex_code = generate_latex_tree_ascii_style(root, tree_idx=2, filename=f"tree_{
 #     f.write(latex_code)
 #
 # print(f"LaTeX code saved to tree_{tree_idx}_simple.txt")
+# print(root.hopping.from_atom.orbital_representations)
+# for item in root.hopping.from_atom.orbital_representations:
+#     print(item)

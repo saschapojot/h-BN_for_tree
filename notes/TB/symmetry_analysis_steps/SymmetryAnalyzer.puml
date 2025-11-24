@@ -1,0 +1,802 @@
+@startuml data_structures_vertical_grouped
+
+' ============================================
+' Tree and Forest Structure - COMPLETE DESIGN
+' ============================================
+
+top to bottom direction
+scale 1.5
+
+skinparam classAttributeIconSize 0
+skinparam backgroundColor #FFFFFF
+skinparam roundcorner 5
+skinparam shadowing false
+skinparam nodesep 100
+skinparam ranksep 120
+skinparam padding 20
+
+' ============================================
+' Layer 1: Foundation
+' ============================================
+
+package "Layer 1: Foundation" #E3F2FD {
+  
+  class AtomIndex <<ValueObject>> {
+    -wyckoff_position : int
+    -atom_number : int
+    -n0, n1, n2 : int
+    __
+    +to_zeta_index(n0, n1, n2) : (int, int)
+    +equals(other) : bool
+    +hash() : int
+  }
+  
+  note right of AtomIndex
+    **Purpose:**
+    Uniquely identifies an atom in the crystal
+    structure within a specific unit cell.
+    
+    **Key Concepts:**
+    - wyckoff_position: Symmetry position type
+    - atom_number: Index within Wyckoff position
+    - (n0, n1, n2): Unit cell coordinates
+    
+    **Immutable value object** - two AtomIndex
+    objects are equal if all fields match.
+  end note
+
+  class Hopping <<ValueObject>> {
+    -to_atom : AtomIndex
+    -from_atom : AtomIndex
+    -space_group_element_id : int
+    __
+    +conjugate() : (from_atom, to_atom)
+    +distance(positions) : float
+    +get_displacement() : Vector3D
+  }
+  
+  note right of Hopping
+    **Purpose:**
+    Represents a hopping integral between
+    two atoms in the tight-binding model.
+    
+    **Key Concepts:**
+    - Directed edge: from_atom -> to_atom
+    - space_group_element_id: Symmetry element
+      that relates the this hopping to reference hopping in equivalence class.
+    - conjugate(): Returns reverse hopping
+    
+   
+  end note
+}
+
+' ============================================
+' Layer 2: Aggregates
+' ============================================
+
+package "Layer 2: Aggregates" #E8F5E9 {
+  
+  class EquivalenceClass <<Aggregate>> {
+    -id : (int, int, int)
+    -center_atom : AtomIndex
+    -hoppings : List<Hopping>
+    -reference_hopping : Hopping
+    -distance : float
+    __
+    +add_hopping(h : Hopping) : void
+    +size() : int
+    +contains(h : Hopping) : bool
+    +get_wyckoff_position() : int
+    +get_atom_number() : int
+    +get_class_index() : int
+  }
+  
+  note right of EquivalenceClass
+    **Purpose:**
+    Groups symmetry-equivalent hoppings.
+    
+    **Key Concepts:**
+    - id = (wyckoff, atom_num, class_idx)
+    - All hoppings in the class have same
+      center_atom as ending point
+    - reference_hopping: Representative member
+    - distance: Physical distance of hoppings
+    
+    **Symmetry principle:**
+    If h1 and h2 are related by space group
+    symmetry, they belong to same class and
+    have hopping parameters related by a unitary transformation.
+    
+  
+  end note
+}
+
+' ============================================
+' Layer 3: Helpers & Builders
+' ============================================
+
+package "Layer 3: Helpers and Builders" #FFF9C4 {
+  
+  class SymmetryHelper <<Service>> {
+    -crystal : CrystalStructure
+    __
+    +compute_stabilizer(atom : AtomIndex) : List<int>
+    +compute_stabilizer_subset(center, neighbor) : List<int>
+    +apply_symmetry(atom, g_id) : AtomIndex
+  }
+  
+  note right of SymmetryHelper
+    **Purpose:**
+    Provides symmetry operations and
+    group-theoretic calculations.
+    
+    **Key Methods:**
+    - compute_stabilizer: Finds all symmetry
+      operations that leave an atom fixed
+    - compute_stabilizer_subset: Finds symmetries
+      that preserve a hopping direction
+    - apply_symmetry: Transforms atom by
+      space group element
+    
+    **Group theory:**
+    Stabilizer subgroup G_atom = {g in G | g·atom = atom}
+    Critical for determining independent parameters.
+  end note
+
+  class EquivalenceClassBuilder <<Service>> {
+    -crystal : CrystalStructure
+    -cutoff_radius : float
+    -symmetry_helper : SymmetryHelper
+    __
+    +find_atoms_within_cutoff(center) : List<AtomIndex>
+    +partition_equivalence_classes(center, neighbors) : List<EquivalenceClass>
+    +build_all_equivalence_classes() : List<EquivalenceClass>
+    +find_group_element_relating_atoms(ref, target) : int
+  }
+  
+  note right of EquivalenceClassBuilder
+    **Purpose:**
+    Constructs all equivalence classes
+    of hoppings within cutoff radius.
+    
+    **Algorithm:**
+    1. For each atom in unit cell [0,0,0]
+    2. Find all neighbors within cutoff
+    3. Group neighbors by symmetry equivalence
+    4. Create EquivalenceClass for each group
+    
+    **Output:**
+    Complete list of symmetry-distinct
+    hopping classes in the crystal.
+  end note
+
+  class ForestBuilder <<Service>> {
+    -equivalence_classes : List<EquivalenceClass>
+    -crystal : CrystalStructure
+    -symmetry_helper : SymmetryHelper
+    __
+    +build_forest() : Forest
+    +find_parent_vertex(equiv_class) : Vertex
+    +create_root_vertex(equiv_class) : Vertex
+    +create_hermitian_child_vertex(equiv_class, parent) : Vertex
+    +create_linear_child_vertex(equiv_class, parent) : Vertex
+    +find_hermitian_edge(child, parent) : HermitianEdge
+    +find_linear_edge(child, parent) : LinearEdge
+  }
+  
+  note right of ForestBuilder
+    **Purpose:**
+    Constructs the forest of trees representing
+    symmetry relationships between equivalence classes.
+    
+    **Algorithm:**
+    1. Start with equivalence classes
+    2. Create root vertex for each independent class
+    3. For related classes, create child vertices:
+       - HERMITIAN_CHILD: conjugate pairs
+       - LINEAR_CHILD: symmetry-related
+    4. Connect with appropriate edges
+    
+    **Tree structure:**
+    - Root: Independent parameters
+    - Hermitian children: Via conjugation + symmetry operation
+    - Linear children: Via symmetry operation
+    
+    **Result:**
+    Forest where each tree represents a family
+    of symmetry-related hopping parameters.
+  end note
+  
+  class ConstraintAnalyzer <<Service>> {
+    -symmetry_helper : SymmetryHelper
+    __
+    +compute_constraint_matrix(vertex : Vertex) : Matrix
+    +find_independent_parameters(constraint_matrix : Matrix) : List<(int, int)>
+    +gaussian_elimination(matrix : Matrix) : Matrix
+  }
+  
+  note right of ConstraintAnalyzer
+    **Purpose:**
+    Determines independent parameters
+    for each vertex using linear algebra.
+    
+    **Method:**
+    1. Build constraint matrix from stabilizer
+    2. Perform Gaussian elimination
+    3. Identify free parameters (pivot columns)
+    
+    **Mathematics:**
+    For N orbitals and stabilizer group H,
+    constraint matrix encodes:
+    U(h)·t·V†(h) = t for all h in H
+    
+    Rank determines number of independent
+    hopping parameters.
+    
+    **Note:**
+    Only ROOT vertices have independent params.
+    HERMITIAN_CHILD and LINEAR_CHILD vertices
+    have zero independent parameters.
+  end note
+  
+  class TransformationRuleGenerator <<Service>> {
+    -forest : Forest
+    -symmetry_helper : SymmetryHelper
+    __
+    +generate_rules_for_tree(tree : Tree) : List<TransformationRule>
+    +generate_hermitian_rule(edge : HermitianEdge) : TransformationRule
+    +generate_linear_rule(edge : LinearEdge) : TransformationRule
+    +generate_all_transformation_rules() : List<TransformationRule>
+  }
+  
+  note right of TransformationRuleGenerator
+    **Purpose:**
+    Generates explicit formulas for how
+    dependent parameters relate to independent ones.
+    
+    **Rule types:**
+    - Hermitian: t_child = (U(g) · t_parent · V†(g))†
+      For HERMITIAN_CHILD vertices
+    
+    - Linear: t_child = U(g) · t_parent · V†(g)
+      For LINEAR_CHILD vertices
+    
+    **Output:**
+    Mathematical formulas that can be used
+    to reconstruct full Hamiltonian from
+    independent parameters (ROOT vertices only).
+    
+    **Example:**
+    "t[class_5] = (U(g_12) · t[class_3] · V†(g_12))†" (Hermitian)
+    "t[class_7] = U(g_12) · t[class_3] · V†(g_12)" (Linear)
+  end note
+  
+  class OutputFileGenerator <<Service>> {
+    -forest : Forest
+    -transformation_rules : List<TransformationRule>
+    __
+    +generate_parameter_list_file(filename : string) : void
+    +generate_parameter_input_template(filename : string) : void
+    +generate_transformation_rules_file(filename : string) : void
+    +generate_summary_report(filename : string) : void
+  }
+  
+  note right of OutputFileGenerator
+    **Purpose:**
+    Creates human-readable output files
+    for the symmetry analysis results.
+    
+    **Output files:**
+    1. parameter_list.txt:
+       List of all independent parameters
+       (only from ROOT vertices)
+    
+    2. parameter_template.txt:
+       Input file template for users
+    
+    3. transformation_rules.txt:
+       Complete set of symmetry relations
+       (both Hermitian and Linear rules)
+    
+    4. summary_report.txt:
+       Statistics: total vertices, roots,
+       hermitian children, linear children
+    
+    **Usage:**
+    These files allow users to understand
+    and utilize the symmetry analysis.
+  end note
+}
+
+' ============================================
+' Layer 4: Graph Structures
+' ============================================
+
+package "Layer 4: Graph Structures" #FCE4EC {
+  
+  enum VertexType <<Enum>> {
+    ROOT
+    HERMITIAN_CHILD
+    LINEAR_CHILD
+  }
+  
+  note right of VertexType
+    **ROOT:** 
+    Vertex with independent parameters.
+    Users must specify values.
+    
+    **HERMITIAN_CHILD:** 
+    Vertex whose parameters are complex
+    conjugates of parent vertex.
+    Related by Hermiticity constraint and symmetry U(g).
+    
+    **LINEAR_CHILD:** 
+    Vertex whose parameters are linearly
+    related to parent via symmetry
+    transformation U(g).
+  end note
+
+  class Vertex <<Entity>> {
+    -id : (int, int, int)
+    -equivalence_class : EquivalenceClass
+    -vertex_type : VertexType
+    -parent_id : (int, int, int)
+    -independent_params : List<(int, int)>
+    -stabilizer_subset : List<int>
+    -constraint_matrix : Matrix
+    __
+    +is_root() : bool
+    +is_hermitian_child() : bool
+    +is_linear_child() : bool
+    +get_num_params() : int
+    +get_wyckoff_position() : int
+    +get_atom_number() : int
+    +get_class_index() : int
+  }
+  
+  note right of Vertex
+    **Purpose:**
+    Node in the forest representing an
+    equivalence class with its parameters.
+    
+    **Fields:**
+    - id: Unique identifier (wyckoff, atom, class)
+    - equivalence_class: The hopping class
+    - vertex_type: ROOT, HERMITIAN_CHILD, or LINEAR_CHILD
+    - parent_id: Reference to parent (null for ROOT)
+    - independent_params: Free parameters (non-empty only for ROOT)
+    - stabilizer_subset: stabilizer for center atom
+    
+    **Three vertex types:**
+    
+    1. ROOT vertices:
+       - Have independent parameters
+       - Users must specify values
+       - parent_id is null
+       - independent_params is non-empty
+    
+    2. HERMITIAN_CHILD vertices:
+       - Parameters = (U(g) ·parent_params · V†(g))†
+       - Connected via HermitianEdge
+       - independent_params is empty
+       - Enforces H = H† constraint
+    
+    3. LINEAR_CHILD vertices:
+       - Parameters = U(g) · parent_params· V†(g)
+       - Connected via LinearEdge
+       - independent_params is empty
+       - Enforces space group symmetry
+  end note
+
+  class HermitianEdge <<Entity>> {
+    -parent_vertex_id : (int, int, int)
+    -child_vertex_id : (int, int, int)
+    -parent_hopping : Hopping
+    -child_hopping : Hopping
+    -connecting_group_element_id : int
+    __
+    +get_transformation() : string
+    +validate_connection() : bool
+  }
+  
+  note right of HermitianEdge
+    **Purpose:**
+    Connects ROOT or LINEAR_CHILD vertex to
+    its HERMITIAN_CHILD vertex.
+    
+    **Physics constraint:**
+    H = H† (Hermiticity of Hamiltonian)
+    
+    
+    **Key property:**
+    Child vertex has type HERMITIAN_CHILD
+    
+    **Example:**
+    If parent is hopping A->B,
+    child is hopping B->A with
+    t_child = (U(g) · t_parent · V†(g))†
+    
+  
+  end note
+
+  class LinearEdge <<Entity>> {
+    -parent_vertex_id : (int, int, int)
+    -child_vertex_id : (int, int, int)
+    -parent_hopping : Hopping
+    -child_hopping : Hopping
+    -connecting_group_element_id : int
+    __
+    +get_transformation() : string
+    +validate_connection() : bool
+  }
+  
+  note right of LinearEdge
+    **Purpose:**
+    Connects ROOT vertex to its LINEAR_CHILD
+    vertex via space group symmetry.
+    
+    **Physics constraint:**
+    Space group symmetry g implies
+    t_child = U(g) · t_parent · V†(g)
+    
+    **Key property:**
+    Child vertex has type LINEAR_CHILD
+    
+    **Key field:**
+    connecting_group_element_id specifies
+    which symmetry operation g relates
+    parent and child. Must be non-null.
+    
+    **Example:**
+    If g is 3-fold rotation, child parameters
+    are rotated version of parent parameters.
+  end note
+
+  class Tree <<Aggregate>> {
+    -root : Vertex
+    -vertices : Map<(int,int,int), Vertex>
+    -hermitian_edges : List<HermitianEdge>
+    -linear_edges : List<LinearEdge>
+    __
+    +add_vertex(v, e) : void
+    +get_depth() : int
+    +get_all_vertices() : List<Vertex>
+    +get_all_edges() : List<Edge>
+    +get_root_vertex() : Vertex
+    +get_hermitian_children() : List<Vertex>
+    +get_linear_children() : List<Vertex>
+  }
+  
+  note right of Tree
+    **Purpose:**
+    Hierarchical structure organizing
+    related equivalence classes.
+    
+    **Structure:**
+    - Single ROOT vertex (independent params)
+    - HERMITIAN_CHILD vertices (conjugate params)
+    - LINEAR_CHILD vertices (symmetry-related params)
+    - HermitianEdges connect to hermitian children
+    - LinearEdges connect to linear children
+    
+    **Example tree:**
+    Root [type=ROOT]: NN hopping A->B
+      |
+      +-- Hermitian child [HERMITIAN_CHILD]: NN hopping B->A
+      |   (via HermitianEdge)
+      |
+      +-- Linear child 1 [LINEAR_CHILD]: Rotated NN hopping
+      |   (via LinearEdge with g=rotation)
+      |
+      +-- Linear child 2 [LINEAR_CHILD]: Reflected NN hopping
+          (via LinearEdge with g=reflection)
+    
+    **Interpretation:**
+    All vertices in one tree can be expressed
+    in terms of the root's independent parameters.
+  end note
+
+  class Forest <<Aggregate>> {
+    -trees : List<Tree>
+    -vertex_lookup : Map<(int,int,int), Tree>
+    __
+    +add_tree(t) : void
+    +find_tree_containing(id) : Tree
+    +get_all_root_vertices() : List<Vertex>
+    +get_all_hermitian_children() : List<Vertex>
+    +get_all_linear_children() : List<Vertex>
+    +get_total_params() : int
+    +get_vertex_type_counts() : Map<VertexType, int>
+  }
+  
+  note right of Forest
+    **Purpose:**
+    Collection of all trees representing
+    complete symmetry structure.
+    
+    **Key insight:**
+    Number of trees = number of independent
+    parameter families needed to specify
+    the full tight-binding Hamiltonian.
+    
+    **Each tree represents:**
+    One family of symmetry-related hoppings:
+    - 1 ROOT vertex with independent params
+    - 0+ HERMITIAN_CHILD (conjugate)
+    - 0+ LINEAR_CHILD vertices (symmetry)
+    
+    **Total parameters:**
+    Sum of independent parameters across
+    all ROOT vertices gives minimum number
+    of user inputs needed.
+    
+    **Statistics:**
+    - Total vertices by type
+    - Total trees
+    - Total independent parameters
+  end note
+  
+  class TransformationRule <<ValueObject>> {
+    -parent_vertex_id : (int, int, int)
+    -child_vertex_id : (int, int, int)
+    -child_vertex_type : VertexType
+    -transformation_type : string
+    -group_element_id : int
+    -orbital_transformation_left : Matrix
+    -orbital_transformation_right : Matrix
+    -formula : string
+    __
+    +to_string() : string
+    +get_latex_formula() : string
+    +is_hermitian_rule() : bool
+    +is_linear_rule() : bool
+  }
+  
+  note right of TransformationRule
+    **Purpose:**
+    Explicit mathematical formula relating
+    child parameters to parent parameters.
+    
+    **Fields:**
+    - child_vertex_type: HERMITIAN_CHILD or LINEAR_CHILD
+    - transformation_type: "hermitian" or "linear"
+    - group_element_id: Symmetry operation (for linear)
+    - orbital_transformation_left: Matrix U(g)
+    - orbital_transformation_right: Matrix V(g)
+    - formula: Human-readable equation
+    
+    **Two types of rules:**
+    
+    1. Hermitian rules (child_vertex_type = HERMITIAN_CHILD):
+       t_child = (U(g) · t_parent · V†(g))†
+       group_element_id may be null
+    
+    2. Linear rules (child_vertex_type = LINEAR_CHILD):
+       t_child = U(g) · t_parent · V†(g)
+       group_element_id must be specified
+    
+    **Usage:**
+    These rules allow reconstruction of
+    all hopping parameters from independent
+    parameters in ROOT vertices only.
+  end note
+}
+
+' ============================================
+' Layer 5: Unified Symmetry Analyzer
+' ============================================
+
+package "Layer 5: Symmetry Analyzer" #D1C4E9 {
+  
+  class SymmetryAnalyzer <<Facade>> {
+    -symmetry_helper : SymmetryHelper
+    -equivalence_class_builder : EquivalenceClassBuilder
+    -forest_builder : ForestBuilder
+    -constraint_analyzer : ConstraintAnalyzer
+    -transformation_rule_generator : TransformationRuleGenerator
+    -output_file_generator : OutputFileGenerator
+    -crystal : CrystalStructure
+    -cutoff_radius : float
+    -equivalence_classes : List<EquivalenceClass>
+    -forest : Forest
+    -transformation_rules : List<TransformationRule>
+    __
+    +run_full_analysis() : AnalysisResult
+    +analyze_symmetry() : Forest
+    +compute_independent_parameters() : List<Parameter>
+    +generate_output_files(output_dir : string) : void
+    +compute_stabilizer(atom : AtomIndex) : List<int>
+    +build_all_equivalence_classes() : List<EquivalenceClass>
+    +build_forest() : Forest
+    +generate_all_transformation_rules() : List<TransformationRule>
+  }
+  
+  note right of SymmetryAnalyzer
+    **Purpose:**
+    Main entry point - orchestrates complete
+    symmetry analysis workflow.
+    
+    **Workflow:**
+    1. Build equivalence classes
+    2. Construct forest of trees
+    3. Analyze constraints (for ROOT vertices)
+    4. Generate transformation rules
+       - Hermitian rules for HERMITIAN_CHILD
+       - Linear rules for LINEAR_CHILD
+    5. Produce output files
+    
+    **Facade pattern:**
+    Provides simple interface to complex
+    multi-step analysis process.
+    
+    **Usage:**
+    analyzer = SymmetryAnalyzer(crystal, cutoff)
+    result = analyzer.run_full_analysis()
+    analyzer.generate_output_files("./output/")
+    
+    **Output summary includes:**
+    - Count of ROOT vertices
+    - Count of HERMITIAN_CHILD vertices
+    - Count of LINEAR_CHILD vertices
+    - Total independent parameters
+    
+    **Delegates to specialized services**
+    for each step of the analysis.
+  end note
+  
+  class AnalysisResult <<ValueObject>> {
+    -forest : Forest
+    -total_independent_params : int
+    -equivalence_classes_count : int
+    -trees_count : int
+    -max_tree_depth : int
+    -root_vertices_count : int
+    -hermitian_children_count : int
+    -linear_children_count : int
+    -parameters_per_tree : Map<int, int>
+    -transformation_rules : List<TransformationRule>
+    __
+    +get_summary() : string
+    +get_parameter_list() : List<Parameter>
+    +get_tree_statistics() : Map
+    +get_transformation_rules() : List<TransformationRule>
+    +get_vertex_type_statistics() : Map<VertexType, int>
+  }
+  
+  note right of AnalysisResult
+    **Purpose:**
+    Immutable result object containing
+    all analysis outputs and statistics.
+    
+    **Contains:**
+    - Complete forest structure
+    - Total number of independent parameters
+    - Statistics by vertex type:
+      * ROOT vertices (have independent params)
+      * HERMITIAN_CHILD vertices (conjugate)
+      * LINEAR_CHILD vertices (symmetry-related)
+    - Statistics (classes, trees, depth)
+    - All transformation rules
+    
+    **Benefits:**
+    - Clean separation of computation and results
+    - Easy to serialize/deserialize
+    - Facilitates testing
+    - Can be passed to other components
+    
+    **Example usage:**
+    print(result.get_summary())
+    params = result.get_parameter_list()
+    stats = result.get_vertex_type_statistics()
+    print(f"Roots: {stats[ROOT]}")
+    print(f"Hermitian children: {stats[HERMITIAN_CHILD]}")
+    print(f"Linear children: {stats[LINEAR_CHILD]}")
+  end note
+  
+  class Parameter <<ValueObject>> {
+    -id : (int, int, int)
+    -tree_id : int
+    -vertex_type : VertexType
+    -wyckoff_positions : (int, int)
+    -orbital_indices : (int, int)
+    -hopping_pair: (to_atom : AtomIndex, from_atom : AtomIndex)
+    -description : string
+    -physical_meaning : string
+    __
+    +to_string() : string
+    +get_latex_notation() : string
+  }
+  
+  note right of Parameter
+    **Purpose:**
+    Represents one independent hopping
+    parameter that user must specify.
+    
+    **Important:**
+    Parameters only exist for ROOT vertices.
+    HERMITIAN_CHILD and LINEAR_CHILD vertices
+    have zero parameters (derived from parent).
+    
+    **Fields:**
+    - id: Equivalence class identifier
+    - tree_id: Which tree it belongs to
+    - vertex_type: Must be ROOT
+    - wyckoff_positions: (from, to) atom types
+    - orbital_indices: (from, to) orbital numbers
+    - hopping_pair: Atoms involved in hopping
+    - description: Human-readable name
+    - physical_meaning: Physical interpretation
+    
+    **Example:**
+    id = (0, 1, 0)
+    vertex_type = ROOT
+    description = "Nearest-neighbor hopping"
+    physical_meaning = "px-py hopping on honeycomb"
+    
+    **Output format:**
+    Can generate LaTeX notation for papers.
+  end note
+}
+
+' ============================================
+' Relationships
+' ============================================
+
+Hopping *-- "2" AtomIndex : contains
+
+EquivalenceClass o-- "1..*" Hopping : groups
+
+EquivalenceClassBuilder --> SymmetryHelper : uses
+EquivalenceClassBuilder ..> EquivalenceClass : creates
+
+ForestBuilder --> SymmetryHelper : uses
+ForestBuilder --> EquivalenceClass : uses
+ForestBuilder ..> Forest : creates
+ForestBuilder ..> Tree : creates
+ForestBuilder ..> Vertex : creates
+ForestBuilder ..> HermitianEdge : creates
+ForestBuilder ..> LinearEdge : creates
+
+ConstraintAnalyzer --> SymmetryHelper : uses
+ConstraintAnalyzer --> Vertex : analyzes
+
+TransformationRuleGenerator --> Forest : uses
+TransformationRuleGenerator --> SymmetryHelper : uses
+TransformationRuleGenerator --> HermitianEdge : uses
+TransformationRuleGenerator --> LinearEdge : uses
+TransformationRuleGenerator ..> TransformationRule : creates
+
+OutputFileGenerator --> Forest : uses
+OutputFileGenerator --> TransformationRule : uses
+OutputFileGenerator --> Parameter : uses
+
+Vertex *-- EquivalenceClass : represents
+Vertex --> VertexType : has type
+
+HermitianEdge --> "2" Vertex : connects
+LinearEdge --> "2" Vertex : connects
+
+Tree *-- Vertex : root
+Tree o-- Vertex : vertices
+Tree o-- HermitianEdge : edges
+Tree o-- LinearEdge : edges
+
+Forest o-- Tree : contains
+
+SymmetryAnalyzer *-- SymmetryHelper : delegates to
+SymmetryAnalyzer *-- EquivalenceClassBuilder : delegates to
+SymmetryAnalyzer *-- ForestBuilder : delegates to
+SymmetryAnalyzer *-- ConstraintAnalyzer : delegates to
+SymmetryAnalyzer *-- TransformationRuleGenerator : delegates to
+SymmetryAnalyzer *-- OutputFileGenerator : delegates to
+
+SymmetryAnalyzer --> Forest : manages
+SymmetryAnalyzer --> EquivalenceClass : manages
+SymmetryAnalyzer --> TransformationRule : manages
+SymmetryAnalyzer ..> AnalysisResult : produces
+
+AnalysisResult --> Forest : contains
+AnalysisResult o-- Parameter : contains
+AnalysisResult o-- TransformationRule : contains
+
+@enduml
