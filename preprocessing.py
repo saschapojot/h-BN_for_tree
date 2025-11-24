@@ -574,13 +574,13 @@ class atomIndex:
 # ==============================================================================
 # Helper functions for atom operations
 # ==============================================================================
-def compute_dist(center_frac, center_cell, dest_frac, basis, search_range, radius):
+def compute_dist(center_frac, center_cell, neighbor_frac, basis, search_range, radius):
     """
     Find all atoms within a radius from a center atom
 
     :param center_frac: Fractional coordinates of center
     :param center_cell: Cell indices of center
-    :param dest_frac: Fractional coordinates of destination atom type
+    :param neighbor_frac: Fractional coordinates of destination atom type
     :param basis: Lattice basis vectors
     :param search_range: Range to search in each direction
     :param radius: Maximum distance
@@ -589,7 +589,7 @@ def compute_dist(center_frac, center_cell, dest_frac, basis, search_range, radiu
     f0, f1 = center_frac
     n0, n1 = center_cell
 
-    g0, g1 = dest_frac
+    g0, g1 = neighbor_frac
 
     a0, a1, a2 = basis
 
