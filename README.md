@@ -10,5 +10,6 @@ Part I, proprocessing
         ./parse_files/sanity_check.py
     (iii)   read space group matrices (Bilbao),
             convert space group matrices (affine) from conventional basis to Cartesian basis
+   (iv) ... (symmetry analysis)
 this project is for testing symmetry analyzer core functionality
-one may also use hBN_scripy.py
+one may also use hBN_scripy.py, this is refactored from preprocessing.py

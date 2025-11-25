@@ -451,10 +451,9 @@ def frac_to_cartesian(cell, frac_coord, basis):
     a0, a1, a2 = basis
     return (n0 + f0) * a0 + (n1 + f1) * a1 + (n2 + f2) * a2
 
-
 class atomIndex:
-    def __init__(self, cell, frac_coord, atom_name, basis, parsed_config=None,
-                 repr_s_np=None, repr_p_np=None, repr_d_np=None, repr_f_np=None):
+    def __init__(self, cell, frac_coord, atom_name, basis, parsed_config,
+                 repr_s_np, repr_p_np, repr_d_np, repr_f_np):
         """
         Initialize an atom with position, orbital, and representation information
 
@@ -463,7 +462,7 @@ class atomIndex:
             frac_coord: [f0, f1, f2] fractional coordinates
             atom_name: atom type name (e.g., 'B', 'N')
             basis: lattice basis vectors [a0, a1, a2]
-            parsed_config: configuration dict containing orbital information (optional)
+            parsed_config: configuration dict containing orbital information
             repr_s_np, repr_p_np, repr_d_np, repr_f_np: representation matrices for s,p,d,f orbitals
         """
         # Deep copy mutable inputs
@@ -473,7 +472,7 @@ class atomIndex:
         self.atom_name = atom_name  # string is immutable
         self.frac_coord = deepcopy(frac_coord)
         self.basis = deepcopy(basis)
-        self.parsed_config=deepcopy(parsed_config)
+        self.parsed_config = deepcopy(parsed_config)
 
         # Calculate Cartesian coordinates using frac_to_cartesian helper
         # The basis vectors a0, a1, a2 are primitive lattice vectors expressed in
@@ -482,23 +481,21 @@ class atomIndex:
         self.cart_coord = frac_to_cartesian(cell, frac_coord, basis)
 
         # Store orbital information if config is provided
-        if parsed_config is not None and atom_name in parsed_config['atom_types']:
+        if atom_name in parsed_config['atom_types']:
             self.orbitals = deepcopy(parsed_config['atom_types'][atom_name]['orbitals'])
             self.num_orbitals = len(self.orbitals)
         else:
-            self.orbitals = None
-            self.num_orbitals = 0
+            raise ValueError(f"Atom type '{atom_name}' not found in parsed_config['atom_types']")
 
-        # Deep copy representation matrices
-        self.repr_s_np = deepcopy(repr_s_np) if repr_s_np is not None else None
-        self.repr_p_np = deepcopy(repr_p_np) if repr_p_np is not None else None
-        self.repr_d_np = deepcopy(repr_d_np) if repr_d_np is not None else None
-        self.repr_f_np = deepcopy(repr_f_np) if repr_f_np is not None else None
+        # Deep copy representation matrices (all required now)
+        self.repr_s_np = deepcopy(repr_s_np)
+        self.repr_p_np = deepcopy(repr_p_np)
+        self.repr_d_np = deepcopy(repr_d_np)
+        self.repr_f_np = deepcopy(repr_f_np)
 
-        # Pre-compute representation matrices for this atom's orbitals if available
+        # Pre-compute representation matrices for this atom's orbitals
         self.orbital_representations = None
-        if (self.orbitals is not None and repr_s_np is not None):
-            self._compute_orbital_representations()
+        self._compute_orbital_representations()
 
     def _compute_orbital_representations(self):
         """
@@ -548,7 +545,7 @@ class atomIndex:
 
     def __str__(self):
         """String representation for print()"""
-        orbital_info = f", Orbitals: {self.num_orbitals}" if self.orbitals else ""
+        orbital_info = f", Orbitals: {self.num_orbitals}"
         repr_info = f", Repr: ✓" if self.orbital_representations is not None else ""
         return (f"Atom: {self.atom_name}, "
                 f"Cell: [{self.n0}, {self.n1}, {self.n2}], "
@@ -565,16 +562,13 @@ class atomIndex:
 
     def get_orbital_names(self):
         """Get list of orbital names for this atom"""
-        return self.orbitals if self.orbitals is not None else []
+        return self.orbitals
 
     def has_orbital(self, orbital_name):
         """Check if this atom has a specific orbital"""
-        if self.orbitals is None:
-            return False
         # Handle both '2s' and 's' format
         orbital_type = orbital_name.lstrip('0123456789')
         return any(orb.lstrip('0123456789') == orbital_type for orb in self.orbitals)
-
 
 # ==============================================================================
 # Helper functions for atom operations
@@ -582,8 +576,8 @@ class atomIndex:
 def compute_dist(center_atom, unit_cell_atoms, search_range=8, radius=None, search_dim=2):
     """
     Find all atoms within a specified radius of a center atom by searching neighboring cells.
-    Returns constructed atomIndex objects for all neighbors found.
-
+    Returns constructed atomIndex objects for all neighbors found. The neighboring atom types are deternimed by
+    unit_cell_atoms
     Args:
         center_atom: atomIndex object for the center atom
         unit_cell_atoms: list of atomIndex objects in the reference unit cell [0,0,0]
@@ -656,9 +650,36 @@ def compute_dist(center_atom, unit_cell_atoms, search_range=8, radius=None, sear
     return [atom for dist, atom in neighbor_atoms]
 
 
+# ==============================================================================
+# Helper function for symmetry operations
+# ==============================================================================
 
+def get_rotation_translation(space_group_bilbao_cart, operation_idx):
+    """
+    Extract rotation/reflection matrix R and translation vector t from a space group operation.
 
+    The space group operation is in the form [R|t], represented as a 3×4 matrix:
+        [R | t] = [R00 R01 R02 | t0]
+                  [R10 R11 R12 | t1]
+                  [R20 R21 R22 | t2]
 
+    The operation transforms a position vector r as: r' = R @ r + t
+
+    Args:
+        space_group_bilbao_cart: List of space group matrices in Cartesian coordinates
+                                 using Bilbao origin (shape: num_ops × 3 × 4)
+        operation_idx: Index of the space group operation
+
+    Returns:
+        tuple: (R, t)
+            - R (ndarray): 3×3 rotation/reflection matrix
+            - t (ndarray): 3D translation vector
+    """
+    operation = space_group_bilbao_cart[operation_idx]
+    R = operation[:3, :3]  # Rotation/reflection part
+    t = operation[:3, 3]  # Translation part
+
+    return R, t
 
 def find_identity_operation(space_group_bilbao_cart, tolerance=1e-9, verbose=True):
     """
@@ -682,10 +703,13 @@ def find_identity_operation(space_group_bilbao_cart, tolerance=1e-9, verbose=Tru
     """
     identity_idx = None
 
-    for idx, group_mat in enumerate(space_group_bilbao_cart):
-        # Check if rotation part is identity and translation part is zero
-        if np.allclose(group_mat[:3, :3], np.eye(3), atol=tolerance) and \
-                np.allclose(group_mat[:3, 3], 0, atol=tolerance):
+    for idx in range(len(space_group_bilbao_cart)):
+        # Extract rotation and translation using helper function
+        R, t = get_rotation_translation(space_group_bilbao_cart, idx)
+
+        # Check if rotation is identity and translation is zero
+        if np.allclose(R, np.eye(3), atol=tolerance) and \
+                np.allclose(t, np.zeros(3), atol=tolerance):
             identity_idx = idx
             if verbose:
                 print(f"Identity operation found at index {identity_idx}")
@@ -762,36 +786,6 @@ class vertex():
                 f"op={self.hopping.operation_idx}, "
                 f"parent={parent_str}, "
                 f"children={len(self.children)})")
-# ==============================================================================
-# Helper function for symmetry operations
-# ==============================================================================
-
-def get_rotation_translation(space_group_bilbao_cart, operation_idx):
-    """
-    Extract rotation/reflection matrix R and translation vector t from a space group operation.
-
-    The space group operation is in the form [R|t], represented as a 3×4 matrix:
-        [R | t] = [R00 R01 R02 | t0]
-                  [R10 R11 R12 | t1]
-                  [R20 R21 R22 | t2]
-
-    The operation transforms a position vector r as: r' = R @ r + t
-
-    Args:
-        space_group_bilbao_cart: List of space group matrices in Cartesian coordinates
-                                 using Bilbao origin (shape: num_ops × 3 × 4)
-        operation_idx: Index of the space group operation
-
-    Returns:
-        tuple: (R, t)
-            - R (ndarray): 3×3 rotation/reflection matrix
-            - t (ndarray): 3D translation vector
-    """
-    operation = space_group_bilbao_cart[operation_idx]
-    R = operation[:3, :3]  # Rotation/reflection part
-    t = operation[:3, 3]  # Translation part
-
-    return R, t
 
 def is_lattice_vector(vector, lattice_basis, tolerance=1e-6):
     """
@@ -831,6 +825,65 @@ def is_lattice_vector(vector, lattice_basis, tolerance=1e-6):
     return is_lattice, n_vector
 
 
+# def check_center_invariant(center_atom, operation_idx, space_group_bilbao_cart,
+#                            lattice_basis, tolerance=1e-6, verbose=False):
+#     """
+#     Check if a center atom is invariant under a specific space group operation.
+#
+#     An atom is invariant if the symmetry operation maps it to itself, possibly
+#     translated by a lattice vector. The actual operation is:
+#         r' = R @ r + t + n0*a0 + n1*a1 + n2*a2
+#     where n0, n1, n2 are integers and a0, a1, a2 are primitive lattice basis vectors.
+#
+#     For invariance, we need: r' = r, which means:
+#         R @ r + t + n0*a0 + n1*a1 + n2*a2 = r
+#         => (R - I) @ r + t = -(n0*a0 + n1*a1 + n2*a2)
+#
+#     Args:
+#         center_atom: atomIndex object representing the center atom
+#         operation_idx: Index of the space group operation to check
+#         space_group_bilbao_cart: List of space group matrices in Cartesian coordinates
+#                                  using Bilbao origin (shape: num_ops × 3 × 4)
+#         lattice_basis: Primitive lattice basis vectors (3×3 array, each row is a basis vector)
+#                       expressed in Cartesian coordinates using Bilbao origin
+#         tolerance: Numerical tolerance for comparison (default: 1e-6)
+#         verbose: Whether to print debug information (default: False)
+#
+#     Returns:
+#         bool: True if the atom is invariant under the operation, False otherwise
+#     """
+#     # Get the symmetry operation [R|t]
+#     R, t = get_rotation_translation(space_group_bilbao_cart, operation_idx)
+#
+#     # Get center atom's Cartesian position (using Bilbao origin)
+#     r_center = center_atom.cart_coord
+#
+#     # Compute (R - I) @ r + t
+#     # This should equal -(n0*a0 + n1*a1 + n2*a2) for some integers n0, n1, n2
+#     lhs = (R - np.eye(3)) @ r_center + t
+#
+#     # Check if -lhs is a lattice vector
+#     is_invariant, n_vector = is_lattice_vector(-lhs, lattice_basis, tolerance)
+#
+#     if verbose:
+#         a0, a1, a2 = lattice_basis
+#         print(f"\nChecking invariance for operation {operation_idx}:")
+#         print(f"  Basis vectors:")
+#         print(f"    a0 = {a0}")
+#         print(f"    a1 = {a1}")
+#         print(f"    a2 = {a2}")
+#         print(f"  Center position r: {r_center}")
+#         print(f"  Rotation R:")
+#         print(f"    {R}")
+#         print(f"  Translation t: {t}")
+#         print(f"  (R - I) @ r + t: {lhs}")
+#         print(f"  Required lattice shift: n0*a0 + n1*a1 + n2*a2")
+#         print(f"  n_vector [n0, n1, n2]: {n_vector}")
+#         print(f"  Is invariant: {is_invariant}")
+#
+#
+#     return is_invariant
+
 def check_center_invariant(center_atom, operation_idx, space_group_bilbao_cart,
                            lattice_basis, tolerance=1e-6, verbose=False):
     """
@@ -864,6 +917,9 @@ def check_center_invariant(center_atom, operation_idx, space_group_bilbao_cart,
     # Get center atom's Cartesian position (using Bilbao origin)
     r_center = center_atom.cart_coord
 
+    # Compute transformed position: R @ r + t
+    r_transformed = R @ r_center + t
+
     # Compute (R - I) @ r + t
     # This should equal -(n0*a0 + n1*a1 + n2*a2) for some integers n0, n1, n2
     lhs = (R - np.eye(3)) @ r_center + t
@@ -872,7 +928,10 @@ def check_center_invariant(center_atom, operation_idx, space_group_bilbao_cart,
     is_invariant, n_vector = is_lattice_vector(-lhs, lattice_basis, tolerance)
 
     if verbose:
-        a0, a1, a2 = lattice_basis
+        # Ensure lattice_basis is a NumPy array
+        lattice_basis_np = np.array(lattice_basis)
+        a0, a1, a2 = lattice_basis_np[0], lattice_basis_np[1], lattice_basis_np[2]
+
         print(f"\nChecking invariance for operation {operation_idx}:")
         print(f"  Basis vectors:")
         print(f"    a0 = {a0}")
@@ -882,10 +941,20 @@ def check_center_invariant(center_atom, operation_idx, space_group_bilbao_cart,
         print(f"  Rotation R:")
         print(f"    {R}")
         print(f"  Translation t: {t}")
+        print(f"  Transformed position (R @ r + t): {r_transformed}")
         print(f"  (R - I) @ r + t: {lhs}")
         print(f"  Required lattice shift: n0*a0 + n1*a1 + n2*a2")
         print(f"  n_vector [n0, n1, n2]: {n_vector}")
         print(f"  Is invariant: {is_invariant}")
+
+        # Extract n0, n1, n2 as floats
+        n0, n1, n2 = float(n_vector[0]), float(n_vector[1]), float(n_vector[2])
+        lattice_shift = n0 * a0 + n1 * a1 + n2 * a2
+        final_position = R @ r_center + t + lattice_shift
+        print(f"  Lattice shift (n0*a0 + n1*a1 + n2*a2): {lattice_shift}")
+        print(f"  Final position (R @ r + t + lattice_shift): {final_position}")
+        print(f"  Should equal original r: {r_center}")
+        print(f"  Difference: {np.linalg.norm(final_position - r_center)}")
 
     return is_invariant
 
@@ -894,23 +963,20 @@ def check_center_invariant(center_atom, operation_idx, space_group_bilbao_cart,
 # STEP 7: Find neighboring atoms and partition into equivalence classes
 # ==============================================================================
 
-
-# ==============================================================================
-# Extract atom type information
-# ==============================================================================
-def initialize_unit_cell_atoms(parsed_config,
-                               repr_s_np=None, repr_p_np=None,
-                               repr_d_np=None, repr_f_np=None):
+def initialize_unit_cell_atoms(parsed_config, repr_s_np, repr_p_np, repr_d_np, repr_f_np):
     """
     Initialize all atoms in the unit cell [0, 0, 0] from parsed configuration.
 
     Args:
         parsed_config: Dictionary containing atom positions, types, and lattice basis
-        repr_s_np, repr_p_np, repr_d_np, repr_f_np: Representation matrices for orbitals (optional)
+        repr_s_np: Representation matrices for s orbitals (num_ops × 1 × 1)
+        repr_p_np: Representation matrices for p orbitals (num_ops × 3 × 3)
+        repr_d_np: Representation matrices for d orbitals (num_ops × 5 × 5)
+        repr_f_np: Representation matrices for f orbitals (num_ops × 7 × 7)
 
     Returns:
         tuple: (atom_types, fractional_positions, unit_cell_atoms) where:
-            - atom_types: list of atom type names (e.g., ['B', 'N', 'B', ...])
+            - atom_types: list of atom type names (e.g., ['B', 'N'])
             - fractional_positions: list of numpy arrays with fractional coordinates
             - unit_cell_atoms: list of atomIndex objects for all atoms in cell [0,0,0]
     """
@@ -934,7 +1000,7 @@ def initialize_unit_cell_atoms(parsed_config,
         atom_types.append(type_name)
         fractional_positions.append(frac_pos)
 
-        # Create atomIndex object
+        # Create atomIndex object (all parameters now required)
         atom = atomIndex(
             cell=reference_cell,
             frac_coord=frac_pos,
@@ -951,9 +1017,8 @@ def initialize_unit_cell_atoms(parsed_config,
 
     return atom_types, fractional_positions, unit_cell_atoms
 
-
-# First initialize the unit cell atoms
-atom_types, fractional_positions, unit_cell_atoms = initialize_unit_cell_atoms(parsed_config)
+#initialize the unit cell atoms
+atom_types, fractional_positions, unit_cell_atoms = initialize_unit_cell_atoms(parsed_config,repr_s_np, repr_p_np, repr_d_np, repr_f_np)
 search_range=8
 radius=1.05 * np.sqrt(3)
 search_dim=2
@@ -964,11 +1029,190 @@ for i, unit_atom in enumerate(unit_cell_atoms):
     neighbors = compute_dist(
         center_atom=unit_atom,
         unit_cell_atoms=unit_cell_atoms,
-        search_range=search_range,  # e.g., 1, 2, 3, etc.
-        radius=radius,  # e.g., 5.0 Angstroms
-        search_dim=search_dim  # 1, 2, or 3
+        search_range=search_range,
+        radius=radius,
+        search_dim=search_dim
     )
     # Store neighbors using the unit cell atom index as key
     all_neighbors[i] = neighbors
     print(f"Unit cell atom {i} ({unit_atom.atom_name}): found {len(neighbors)} neighbors within radius {radius}")
+# ==============================================================================
+# Find identity operation
+# ==============================================================================
+identity_idx = find_identity_operation(space_group_bilbao_cart, tolerance=1e-9, verbose=True)
 
+# ==============================================================================
+# print atom orbital representations for all unit cell atoms
+# ==============================================================================
+print("\n" + "=" * 80)
+print("PRINTING ATOM ORBITAL REPRESENTATIONS")
+print("=" * 80)
+
+for i, atom in enumerate(unit_cell_atoms):
+    print(f"\nUnit cell atom {i} ({atom.atom_name}):")
+    print(f"  {atom}")
+    print(f"  Orbitals: {atom.get_orbital_names()}")
+
+    if atom.orbital_representations:
+        print(f"  Number of operations: {len(atom.orbital_representations)}")
+        V_identity = atom.get_representation_matrix(identity_idx)
+        print(f" Orbital representation's identity matrix shape: {V_identity.shape}")
+        print(f" Orbital representation's identity present: {np.allclose(V_identity, np.eye(V_identity.shape[0]))}")
+
+
+print("\n" + "=" * 80)
+print("ORBITAL REPRESENTATION VERIFICATION COMPLETE")
+print("=" * 80)
+
+
+# ==============================================================================
+# Helper function for symmetry operations
+# ==============================================================================
+def get_next_for_center(center_atom, nghb_atom, space_group_bilbao_cart, operation_idx,
+                        parsed_config, tolerance=1e-5, verbose=False):
+    """
+    Apply a space group operation to a neighbor atom, conditioned on center atom invariance.
+
+    This function checks if the center atom is invariant under the specified space group
+    operation. If it is, the operation is applied to the neighbor atom to find its
+    transformed position.
+
+    Args:
+        center_atom: atomIndex object for the center atom
+        nghb_atom: atomIndex object for the neighbor atom
+        space_group_bilbao_cart: List of space group matrices in Cartesian coordinates
+                                 using Bilbao origin (shape: num_ops × 3 × 4)
+        operation_idx: Index of the space group operation to apply
+        parsed_config: Configuration dictionary containing lattice_basis
+        tolerance: Numerical tolerance for invariance check (default: 1e-6)
+        verbose: Whether to print debug information (default: False)
+
+    Returns:
+        numpy.ndarray or None:
+            - Transformed Cartesian coordinates of neighbor atom if center is invariant
+            - None if center is not invariant under this operation
+    """
+    # Extract rotation and translation from space group operation
+    R, b = get_rotation_translation(space_group_bilbao_cart, operation_idx)
+
+    # Get lattice basis vectors
+    lattice_basis = np.array(parsed_config['lattice_basis'])
+
+    if verbose:
+        print(f"\n{'=' * 60}")
+        print(f"GET_NEXT_FOR_CENTER - Operation {operation_idx}")
+        print(f"{'=' * 60}")
+        print(f"Center atom: {center_atom.atom_name} at {center_atom.cart_coord}")
+        print(f"Neighbor atom: {nghb_atom.atom_name} at {nghb_atom.cart_coord}")
+        print(f"Lattice basis:")
+        for i, basis_vec in enumerate(lattice_basis):
+            print(f"  a{i} = {basis_vec}")
+
+    # Check if center atom is invariant under this operation
+    is_invariant = check_center_invariant(
+        center_atom,
+        operation_idx,
+        space_group_bilbao_cart,
+        lattice_basis,
+        tolerance,
+        verbose
+    )
+
+    if is_invariant:
+        # Apply symmetry operation to neighbor atom
+        nghb_cart_coord = nghb_atom.cart_coord
+        next_cart_coord = R @ nghb_cart_coord + b
+
+        if verbose:
+            print(f"\n✓ Center atom IS invariant under operation {operation_idx}")
+            print(f"  Applying transformation to neighbor:")
+            print(f"  Original position: {nghb_cart_coord}")
+            print(f"  Transformed position: {next_cart_coord}")
+            print(f"  Displacement: {next_cart_coord - nghb_cart_coord}")
+            print(f"  Distance from center: {np.linalg.norm(next_cart_coord - center_atom.cart_coord):.6f}")
+
+        return next_cart_coord
+    else:
+        if verbose:
+            print(f"\n✗ Center atom is NOT invariant under operation {operation_idx}")
+            print(f"  Returning None (no transformation applied)")
+
+        return None
+
+# get_next_for_center(unit_cell_atoms[0],all_neighbors[0][0],space_group_bilbao_cart,2,parsed_config)
+
+def search_equivalent_atom(center_atom,neighbor_atoms_copy,seed_distance,space_group_bilbao_cart,lattice_basis,tolerance=1e-6, verbose=False):
+    """
+
+    :param center_atom:
+    :param neighbor_atoms_copy:
+    :param seed_distance:
+    :param space_group_bilbao_cart:
+    :param lattice_basis:
+    :param tolerance:
+    :param verbose:
+    :return:
+    """
+    for idx, atom in enumerate(neighbor_atoms_copy):
+        center_is_invariant=check_center_invariant(center_atom,)
+
+def get_equivalent_sets_for_one_center_atom(center_atom_idx, unit_cell_atoms, all_neighbors,
+                                                space_group_bilbao_cart, identity_idx,
+                                                tolerance=1e-5, verbose=False):
+    """
+
+    :param center_atom_idx: Index of the center atom in unit_cell_atoms
+    :param unit_cell_atoms: List of all atomIndex objects in the unit cell
+    :param all_neighbors: Dictionary mapping center atom index to list of neighbor atomIndex objects
+    :param space_group_bilbao_cart: List of space group matrices in Cartesian coordinates
+    :param identity_idx: Index of the identity operation
+    :param tolerance: Numerical tolerance for comparisons (default: 1e-5)
+    :param verbose: Whether to print debug information (default: False)
+    :return:
+    """
+    center_atom=unit_cell_atoms[center_atom_idx]
+
+    neighbor_atoms_copy=set(deepcopy(all_neighbors[center_atom_idx]))
+    equivalent_atom_list = []
+    equivalent_hopping_list = []
+    set_counter = 0
+    if verbose:
+        print(f"\n{'=' * 60}")
+        print(f"PARTITIONING NEIGHBORS FOR CENTER ATOM {center_atom_idx} ({center_atom.atom_name})")
+        print(f"{'=' * 60}")
+        print(f"Total neighbors to partition: {len(neighbor_atoms_copy)}")
+
+    while len(neighbor_atoms_copy) > 0:
+        set_counter += 1
+        if verbose:
+            print(f"\n--- Equivalent Set {set_counter} ---")
+
+        # Take the first atom from remaining neighbors as seed (and remove it)
+        seed_atom = neighbor_atoms_copy.pop()
+
+
+        if verbose:
+            print(f"Seed atom: {seed_atom}")
+        # Calculate seed atom's distance to center
+        seed_distance = np.linalg.norm(seed_atom.cart_coord - center_atom.cart_coord)
+        if verbose:
+            print(f"Seed distance to center: {seed_distance:.6f}")
+
+        # Track equivalent atoms: list of (operation_idx, atom) tuples
+        equivalent_atoms = [(identity_idx, seed_atom)]
+        current_hopping_set = []
+        # Get identity matrix components
+        identity_rotation ,identity_translation =get_rotation_translation(space_group_bilbao_cart,identity_idx)
+        # Create hopping for seed atom with identity operation
+        seed_hop = hopping(
+            to_atom=center_atom,
+            from_atom=seed_atom,
+            class_id=set_counter - 1,
+            operation_idx=identity_idx,
+            rotation_matrix=identity_rotation,
+            translation_vector=identity_translation
+        )
+        current_hopping_set.append(seed_hop)
+
+
+get_equivalent_sets_for_one_center_atom(0,unit_cell_atoms,all_neighbors,space_group_bilbao_cart,identity_idx)
