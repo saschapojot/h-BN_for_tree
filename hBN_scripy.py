@@ -1892,139 +1892,552 @@ def equivalent_class_to_hoppings(one_equivalent_class, center_atom,
     return deepcopy(hoppings)
 
 
-ind=1
+
+def convert_equivalence_classes_to_hoppings(equivalence_classes, center_atom,
+                                           space_group_bilbao_cart, identity_idx,
+                                           verbose=False):
+    """
+    Convert all equivalence classes of neighbors into hopping objects.
+    Each equivalence class contains symmetry-equivalent neighbors at the same distance.
+    This function:
+    1. Sorts equivalence classes by distance (nearest neighbors first)
+    2. Converts each equivalence class into an equivalent hopping class
+
+    An equivalent hopping class contains all hoppings (center ← neighbor) that are
+    related by symmetry operations. All hoppings in one class have:
+    - Same hopping distance
+    - Same center and neighbor atom types
+    - Hopping matrices related by symmetry transformations
+
+    IMPORTANT: Returns deep copy for complete independence.
+    The hopping objects themselves don't contain tree structure - that comes later
+    when vertices are created with parent-child references.
+
+    Args:
+        equivalence_classes: List of equivalence classes (unsorted)
+                            Each class is a list of tuples:
+                            (neighbor_atom, operation_idx, n_vec)
+        center_atom:  atomIndex object for the center atom (hopping destination)
+        space_group_bilbao_cart: List of space group matrices in Cartesian coordinates
+                                using Bilbao origin (shape: num_ops × 3 × 4)
+        identity_idx:  Index of the identity operation
+        verbose: Whether to print detailed conversion information (default: False)
+
+    Returns:
+        Deep copy of list of equivalent hopping classes (sorted by distance):
+        - Outer list: one equivalent hopping class per equivalence class
+        - Inner list: all equivalent hoppings in that class
+
+        Structure:
+         [
+            [hop_seed, hop_derived1, hop_derived2, ...],  # Class 0 (nearest, usually self)
+            [hop_seed, hop_derived1, ...],                # Class 1 (next-nearest)
+            ...
+        ]
+
+        Each hopping class contains:
+        - One seed hopping (is_seed=True, operation_idx=identity_idx)
+        - Multiple derived hoppings (is_seed=False, related by symmetry)
+
+        Deep Copy Strategy:
+        ------------------
+        Returns deepcopy(all_hopping_classes) for complete independence.
+
+        HOPPING vs VERTEX separation:
+        - hopping objects: Store physical data (atoms, distance, operation_idx, etc.)
+                          Can be freely copied - no tree structure inside
+        - vertex objects: Store tree relationships (parent, children, is_root)
+                         These will be created LATER and should NOT be deep copied
+                         once the tree is built (would break parent-child references)
+
+
+
+    """
+    if verbose:
+        print("\n" + "=" * 80)
+        print("CONVERTING EQUIVALENCE CLASSES TO EQUIVALENT HOPPING CLASSES")
+        print("=" * 80)
+    # ==============================================================================
+    # STEP 1: Sort equivalence classes by distance
+    # ==============================================================================
+    # Sort by distance to center atom (nearest neighbors first)
+    # Each equivalence class eq_class is a list of tuples: (neighbor_atom, operation_idx, n_vec)
+    # We extract the first neighbor from each class to compute its distance
+    equivalence_classes_sorted = sorted(
+        equivalence_classes,
+        key=lambda eq_class: np.linalg.norm(
+            eq_class[0][0].cart_coord - center_atom.cart_coord, ord=2
+        )
+    )
+    # eq_class[0][0] breakdown:
+    # eq_class[0] = first tuple in the equivalence class: (neighbor_atom, operation_idx, n_vec)
+    # eq_class[0][0] = neighbor_atom (first element of that tuple)
+    # All members in an equivalence class have the same distance, so we use the first one
+
+    if verbose:
+        print(f"Processing {len(equivalence_classes_sorted)} classes (sorted by distance)\n")
+
+    # ==============================================================================
+    # STEP 2: Convert each equivalence class to equivalent hopping class
+    # ==============================================================================
+
+    all_hopping_classes = []
+    for class_id, eq_class in enumerate(equivalence_classes_sorted):
+        # Convert this equivalence class to equivalent hopping class
+        equivalent_hoppings = equivalent_class_to_hoppings(
+            one_equivalent_class=eq_class,
+            center_atom=center_atom,
+            space_group_bilbao_cart=space_group_bilbao_cart,
+            identity_idx=identity_idx
+        )
+        all_hopping_classes.append(equivalent_hoppings)
+        if verbose:
+            # ==============================================================
+            # Print equivalence class summary header
+            # ==============================================================
+            hop = equivalent_hoppings[0]
+            print(f"\n{'-' * 60}")
+            print(f"HOPPING CLASS {class_id}")
+            print(f"{'-' * 60}")
+            print(f"  Distance:         {hop.distance:.6f}")
+            print(f"  Hopping:          {center_atom.atom_name} ← {hop.from_atom.atom_name}")
+            print(f"  Num Equivalent:   {len(equivalent_hoppings)}")
+
+            # ==============================================================
+            # Print detailed information for each hopping in this class
+            # ==============================================================
+            print(f"\n  Member Hoppings:")
+            for i, one_hopping in enumerate(equivalent_hoppings):
+                # Extract key information
+                neighbor = one_hopping.from_atom
+                op_idx = one_hopping.operation_idx
+                n_vec = one_hopping.n_vec
+                is_seed = one_hopping.is_seed
+                # Format cell indices
+                to_cell = f"[{one_hopping.to_atom.n0},{one_hopping.to_atom.n1},{one_hopping.to_atom.n2}]"
+                from_cell = f"[{neighbor.n0},{neighbor.n1},{neighbor.n2}]"
+
+                # Format seed marker
+                seed_marker = " [SEED]" if is_seed else ""
+                print(f"    {i:2d}. {center_atom.atom_name}{to_cell} ← {neighbor.atom_name}{from_cell}")
+                print(f"        op_idx={op_idx:3d}, n_vec={n_vec}, d={one_hopping.distance:.6f}{seed_marker}")
+
+                # Print hopping details with indentation
+
+
+    if verbose:
+        print(f"\n{'=' * 80}")
+        print(f"CONVERSION SUMMARY")
+        print(f"{'=' * 80}")
+        print(f"Total hopping classes:     {len(all_hopping_classes)}")
+        print(f"Total equivalent hoppings: {sum(len(h) for h in all_hopping_classes)}")
+        print("=" * 80)
+
+    # ==============================================================================
+    # Return deep copy for complete independence
+    # ==============================================================================
+    # Safe to deep copy hopping objects:
+    # - hopping class stores only physical data (atoms, distances, operations)
+    # - No tree structure is embedded in hopping objects
+    # - Tree structure lives in vertex objects (created later)
+    # - Vertices wrap hoppings and add parent/children/is_root attributes
+    return deepcopy(all_hopping_classes)
+
+
+
+
+
+
+def hopping_to_vertex(hopping,identity_idx,type_linear):
+    """
+    Convert a hopping object to a vertex object.
+    Args:
+        hopping: hopping object to convert
+        identity_idx: Index of the identity operation
+
+    Returns:
+        vertex object (deep copied for independence)
+
+    """
+    # Determine constraint type based on whether this is a seed hopping
+    if hopping.is_seed==True:
+        constraint_type = None  # Root vertex has no parent constraint
+    else:
+        constraint_type = type_linear  # Derived from symmetry operation
+    # Create vertex with no parent (parent will be set when building tree)
+    new_vertex=vertex(hopping,constraint_type,identity_idx,parent=None)
+
+    return deepcopy(new_vertex)
+
+def one_equivalent_hopping_class_to_root(one_equivalent_hopping_class, identity_idx, type_linear, verbose=False):
+    """
+    Convert an equivalent hopping class into a constraint tree.
+
+    This function:
+    1. Converts all hoppings to vertex objects
+    2. Finds the root vertex (seed hopping with identity operation)
+    3. Connects all derived vertices as linear children of the root
+    4. Returns the root vertex (which contains references to all children)
+
+    Tree Structure Created:
+    ----------------------
+                    Root (seed, identity operation)
+                     |
+         +-----------+-----------+-----------+
+         |           |           |           |
+      Child 1     Child 2     Child 3     Child 4
+     (linear)    (linear)    (linear)    (linear)
+
+    Each child is derived from root by a symmetry operation.
+    Args:
+        one_equivalent_hopping_class: List of hopping objects (all symmetry-equivalent)
+        identity_idx:  Index of the identity operation
+        type_linear: String identifier for linear constraint type (e.g., "linear")
+        verbose: Whether to print tree construction details (default: False)
+
+    Returns:
+        vertex object: Root of the constraint tree (contains references to all children)
+
+    Raises:
+        ValueError: If no root vertex found (no seed hopping in the class)
+
+    """
+    if verbose:
+        print("\n" + "=" * 60)
+        print("BUILDING CONSTRAINT TREE FROM EQUIVALENT HOPPING CLASS")
+        print("=" * 60)
+        print(f"Number of hoppings in class: {len(one_equivalent_hopping_class)}")
+
+    # ==============================================================================
+    # STEP 1: Convert all hoppings to vertices
+    # ==============================================================================
+    vertex_list=[hopping_to_vertex(one_hopping,identity_idx,type_linear) for one_hopping in one_equivalent_hopping_class]
+    if verbose:
+        print(f"Created {len(vertex_list)} vertices")
+    # ==============================================================================
+    # STEP 2: Find the root vertex (seed hopping)
+    # ==============================================================================
+    tree_root=None
+    derived_vertices = []  # List to store non-root vertices
+    for one_vertex in vertex_list:
+        if one_vertex.is_root == True:
+            if tree_root is not None:
+                # Multiple roots found - this shouldn't happen
+                raise ValueError("Multiple root vertices found in equivalence class! "
+                                 "Each class should have exactly one seed hopping.")
+            tree_root = one_vertex
+            if verbose:
+                print(f"\nRoot vertex found:")
+                print(f"  {tree_root}")
+                print(f"  Operation index: {tree_root.hopping.operation_idx}")
+                print(f"  Distance: {tree_root.hopping.distance:.6f}")
+
+        else:
+            derived_vertices.append(one_vertex)
+
+    # ==============================================================================
+    # STEP 3: Validate that root was found
+    # ==============================================================================
+    if tree_root is None:
+        raise ValueError("No root vertex found in equivalence class! "
+                         f"Identity operation (idx={identity_idx}) not present.")
+    if verbose:
+        print(f"\nFound {len(derived_vertices)} derived vertices (children)")
+
+    # ==============================================================================
+    # STEP 4: Connect all derived vertices as children of root
+    # ==============================================================================
+    # CRITICAL: Use add_child() to establish bidirectional parent-child relationships
+    # This creates REFERENCES (not copies) between root and children
+
+    for i, child_vertex in enumerate(derived_vertices):
+        tree_root.add_child(child_vertex)
+        if verbose:
+            print(f"  Child {i}: operation_idx={child_vertex.hopping.operation_idx}, "
+                  f"type={child_vertex.type}")
+
+    if verbose:
+        print(f"\nTree construction complete!")
+        print(f"Root has {len(tree_root.children)} children")
+        print("=" * 60)
+
+    # ==============================================================================
+    # STEP 5: Return the root vertex
+    # ==============================================================================
+    # IMPORTANT: Return tree_root WITHOUT deep copying
+    # ------------------------------------------------
+    # The tree_root contains REFERENCES to its children via tree_root.children
+    # Deep copying would break these parent-child references
+    # Caller receives the actual root vertex object with intact tree structure
+
+    return tree_root
+
+
+def construct_all_roots_for_1_atom(equivalent_hoppings_all_for_1_atom,identity_idx,type_linear, verbose=False):
+    """
+    Construct constraint tree roots for all hopping classes of one center atom.
+    This function processes all equivalent hopping classes for a single center atom
+    and builds a constraint tree for each class. Each tree has:
+    - Root vertex: seed hopping (identity operation)
+    - Children vertices: derived hoppings (symmetry operations)
+    Args:
+        equivalent_hoppings_all_for_1_atom: List of hopping classes for one center atom
+                                           Each element is a list of equivalent hoppings
+                                           Structure: [[class_0_hoppings], [class_1_hoppings], ...]
+        identity_idx: Index of the identity operation in space_group_bilbao_cart
+        type_linear: String identifier for linear constraint type (e.g., "linear")
+        verbose: Whether to print detailed construction information (default: False)
+
+
+    Returns:
+        list: List of root vertex objects, one for each hopping class
+              Each root contains references to its children forming a constraint tree
+
+    CRITICAL: Returns references, not deep copies
+    --------------------------------------------
+    Each root vertex in the returned list contains a tree structure with:
+    - root.children = [child1, child2, ...] (references to child vertices)
+    - Each child has child.parent pointing back to root
+     Do NOT deep copy the returned roots - this would break tree structure!
+    """
+
+    if verbose:
+        print("\n" + "=" * 80)
+        print("CONSTRUCTING ALL CONSTRAINT TREES FOR ONE CENTER ATOM")
+        print("=" * 80)
+        print(f"Number of hopping classes: {len(equivalent_hoppings_all_for_1_atom)}")
+
+    root_list=[]
+    for class_idx, eq_class_hoppings in enumerate(equivalent_hoppings_all_for_1_atom):
+        if verbose:
+            print(f"\n{'-' * 60}")
+            print(f"Processing hopping class {class_idx}")
+            print(f"{'-' * 60}")
+        # Build constraint tree for this hopping class
+        root = one_equivalent_hopping_class_to_root(
+            eq_class_hoppings,
+            identity_idx,
+            type_linear,
+            verbose
+        )
+        root_list.append(root)
+        if verbose:
+            print(f"Class {class_idx} tree built: root with {len(root.children)} children")
+
+    if verbose:
+        print("\n" + "=" * 80)
+        print("ALL CONSTRAINT TREES CONSTRUCTED")
+        print("=" * 80)
+        print(f"Total trees: {len(root_list)}")
+        print(f"Total vertices: {sum(1 + len(root.children) for root in root_list)}")
+    return root_list
+
+
+def print_tree(root, prefix="", is_last=True, show_details=True, max_depth=None, current_depth=0):
+    """
+    Print a constraint tree structure in a visual hierarchical format.
+
+    Args:
+        root: vertex object (root of tree or subtree)
+        prefix: String prefix for indentation (used in recursion)
+        is_last: Boolean indicating if this is the last child (affects connector style)
+        show_details: Whether to show detailed hopping information (default: True)
+        max_depth: Maximum depth to print (None = unlimited, default: None)
+        current_depth: Current depth in recursion (internal use, default: 0)
+
+    Tree Structure Symbols:
+        ╔═══ ROOT     (root node)
+        ├── CHILD    (middle child)
+        └── CHILD    (last child)
+        │           (vertical line for continuation)
+
+    Example Output:
+        ╔═══ ROOT: N[0,0,0] ← N[0,0,0], op=0, d=0.0000
+        ├── CHILD (linear): N[0,0,0] ← N[1,0,0], op=1, d=2.5000
+        ├── CHILD (linear): N[0,0,0] ← N[-1,1,0], op=2, d=2.5000
+        └── CHILD (linear): N[0,0,0] ← N[0,-1,0], op=3, d=2.5000
+    """
+    # Check max depth
+    if max_depth is not None and current_depth > max_depth:
+        return
+
+    # Determine node styling
+    if root.is_root:
+        node_label = "ROOT"
+        connector = "╔═══ "
+        detail_prefix = prefix
+    else:
+        node_label = f"CHILD ({root.type})"
+        connector = "└── " if is_last else "├── "
+        detail_prefix = prefix + ("    " if is_last else "│   ")
+
+    # Build node description
+    hop = root.hopping
+
+    # Basic info: atom types and operation
+    to_cell = f"[{hop.to_atom.n0},{hop.to_atom.n1},{hop.to_atom.n2}]"
+    from_cell = f"[{hop.from_atom.n0},{hop.from_atom.n1},{hop.from_atom.n2}]"
+    basic_info = f"{hop.to_atom.atom_name}{to_cell} ← {hop.from_atom.atom_name}{from_cell}"
+
+    # Print main node line
+    if show_details:
+        print(f"{prefix}{connector}{node_label}: {basic_info}, "
+              f"op={hop.operation_idx}, d={hop.distance:.4f}")
+    else:
+        print(f"{prefix}{connector}{node_label}: op={hop.operation_idx}")
+
+    # Print additional details if requested and this is root
+    if show_details and root.is_root and current_depth == 0:
+        print(f"{detail_prefix}    ├─ Type: {root.type}")
+        print(f"{detail_prefix}    ├─ Children: {len(root.children)}")
+        print(f"{detail_prefix}    └─ Distance: {hop.distance:.6f}")
+
+    # Recursively print children
+    if root.children:
+        for i, child in enumerate(root.children):
+            is_last_child = (i == len(root.children) - 1)
+
+            # Determine new prefix for children
+            if root.is_root:
+                new_prefix = ""
+            else:
+                new_prefix = prefix + ("    " if is_last else "│   ")
+
+            print_tree(child, new_prefix, is_last_child, show_details, max_depth, current_depth + 1)
+
+
+def print_all_trees(roots_list, show_details=True, max_trees=None, max_depth=None):
+    """
+    Print all constraint trees in a formatted way.
+
+    Args:
+        roots_list: List of root vertex objects
+        show_details: Whether to show detailed information (default: True)
+        max_trees: Maximum number of trees to print (None = all, default: None)
+        max_depth: Maximum depth to print for each tree (None = unlimited, default: None)
+    """
+    print("\n" + "=" * 80)
+    print("CONSTRAINT TREE STRUCTURES")
+    print("=" * 80)
+
+    num_trees = len(roots_list) if max_trees is None else min(max_trees, len(roots_list))
+
+    for i in range(num_trees):
+        root = roots_list[i]
+        hop = root.hopping
+
+        print(f"\n{'─' * 80}")
+        print(f"Tree {i}: Distance = {hop.distance:.6f}, "
+              f"Hopping: {hop.to_atom.atom_name} ← {hop.from_atom.atom_name}")
+        print(f"{'─' * 80}")
+
+        print_tree(root, show_details=show_details, max_depth=max_depth)
+
+    if max_trees is not None and len(roots_list) > max_trees:
+        print(f"\n... and {len(roots_list) - max_trees} more trees")
+
+    print("\n" + "=" * 80)
+
+
+def print_tree_summary(roots_list):
+    """
+    Print a compact summary of all constraint trees.
+
+    Args:
+        roots_list: List of root vertex objects
+    """
+    print("\n" + "=" * 80)
+    print("CONSTRAINT TREE SUMMARY")
+    print("=" * 80)
+
+    total_vertices = sum(1 + len(root.children) for root in roots_list)
+    total_children = sum(len(root.children) for root in roots_list)
+
+    print(f"\nTotal trees: {len(roots_list)}")
+    print(f"Total vertices: {total_vertices}")
+    print(f"Total root vertices: {len(roots_list)}")
+    print(f"Total child vertices: {total_children}")
+
+    print(f"\n{'Tree':<6} {'Distance':<12} {'Hopping':<30} {'Children':<10}")
+    print("─" * 80)
+
+    for i, root in enumerate(roots_list):
+        hop = root.hopping
+        hopping_str = f"{hop.to_atom.atom_name} ← {hop.from_atom.atom_name}"
+        print(f"{i:<6} {hop.distance:<12.6f} {hopping_str:<30} {len(root.children):<10}")
+
+    print("=" * 80)
+
+
+def print_tree_detailed(root, indent=0, show_matrices=False):
+    """
+    Print tree with very detailed information including matrices.
+
+    Args:
+        root: vertex object (root of tree or subtree)
+        indent: Current indentation level (default: 0)
+        show_matrices: Whether to show rotation matrices (default: False)
+    """
+    indent_str = "  " * indent
+    hop = root.hopping
+
+    # Node header
+    if root.is_root:
+        print(f"{indent_str}╔═══ ROOT VERTEX")
+    else:
+        print(f"{indent_str}├── CHILD VERTEX (constraint: {root.type})")
+
+    # Hopping information
+    to_cell = f"[{hop.to_atom.n0},{hop.to_atom.n1},{hop.to_atom.n2}]"
+    from_cell = f"[{hop.from_atom.n0},{hop.from_atom.n1},{hop.from_atom.n2}]"
+
+    print(f"{indent_str}│   Hopping: {hop.to_atom.atom_name}{to_cell} ← {hop.from_atom.atom_name}{from_cell}")
+    print(f"{indent_str}│   Operation index: {hop.operation_idx}")
+    print(f"{indent_str}│   Distance: {hop.distance:.6f}")
+    print(f"{indent_str}│   Lattice shift n_vec: {hop.n_vec}")
+    print(f"{indent_str}│   Is seed: {hop.is_seed}")
+
+    # Orbital information
+    print(f"{indent_str}│   Center orbitals ({hop.to_atom.num_orbitals}): {', '.join(hop.to_atom.orbitals)}")
+    print(f"{indent_str}│   Neighbor orbitals ({hop.from_atom.num_orbitals}): {', '.join(hop.from_atom.orbitals)}")
+
+    # Vertex information
+    print(f"{indent_str}│   Number of children: {len(root.children)}")
+    print(f"{indent_str}│   Has parent: {root.parent is not None}")
+
+    # Rotation matrix (optional)
+    if show_matrices:
+        print(f"{indent_str}│   Rotation matrix R:")
+        for row in hop.rotation_matrix:
+            print(f"{indent_str}│     {row}")
+        print(f"{indent_str}│   Translation vector t: {hop.translation_vector}")
+
+    print(f"{indent_str}│")
+
+    # Print children
+    for i, child in enumerate(root.children):
+        is_last = (i == len(root.children) - 1)
+        print_tree_detailed(child, indent + 1, show_matrices)
+
+
+ind=0
 center_atom=unit_cell_atoms[ind]
 equivalence_classes=get_equivalent_sets_for_one_center_atom(ind,unit_cell_atoms,all_neighbors,space_group_bilbao_cart, identity_idx)
-# ==============================================================================
-# Sort equivalence classes by distance from center atom
-# ==============================================================================
-print("\n" + "=" * 80)
-print("SORTING EQUIVALENCE CLASSES BY DISTANCE")
-print("=" * 80)
+equivalent_classes_hoppings_for_atom_ind=convert_equivalence_classes_to_hoppings(
+equivalence_classes,
+center_atom,
+    space_group_bilbao_cart, identity_idx,True
+)
 
-# Create a list of (distance, equivalence_class) tuples
-equivalence_classes_with_distance = []
-for eq_class in equivalence_classes:
-    # Get the first neighbor atom from the equivalence class
-    first_neighbor = eq_class[0][0]
-    # Calculate distance from center to this neighbor
-    distance = np.linalg.norm(first_neighbor.cart_coord - center_atom.cart_coord, ord=2)
-    equivalence_classes_with_distance.append((distance, eq_class))
-
-# Sort by distance (ascending order)
-equivalence_classes_with_distance.sort(key=lambda x: x[0])
-
-# Extract the sorted equivalence classes
-equivalence_classes_sorted = [eq_class for distance, eq_class in equivalence_classes_with_distance]
-
-print(f"Sorted {len(equivalence_classes_sorted)} equivalence classes by distance")
-print()
-
-# ==============================================================================
-# Print sorted equivalence classes for the center atom
-# ==============================================================================
-print("\n" + "=" * 80)
-print(f"EQUIVALENCE CLASSES FOR CENTER ATOM {ind} ({center_atom.atom_name})")
-print("(SORTED BY DISTANCE)")
-print("=" * 80)
-print(f"Center atom position: {center_atom.cart_coord}")
-print(f"Total equivalence classes: {len(equivalence_classes_sorted)}")
-print()
-
-for class_id, eq_class in enumerate(equivalence_classes_sorted):
-    print(f"{'-' * 60}")
-    print(f"Equivalence Class {class_id}:")
-    print(f"  Number of members: {len(eq_class)}")
-
-    # Calculate distance for this equivalence class (should be same for all members)
-    first_neighbor = eq_class[0][0]  # Get first neighbor atom
-    distance = np.linalg.norm(first_neighbor.cart_coord - center_atom.cart_coord, ord=2)
-    print(f"  Distance from center: {distance:.6f}")
-    print()
-
-    # Print each member of the equivalence class
-    for member_idx, (neighbor_atom, operation_idx, n_vec) in enumerate(eq_class):
-        # Calculate actual distance to verify
-        actual_distance = np.linalg.norm(neighbor_atom.cart_coord - center_atom.cart_coord, ord=2)
-
-        # Mark if this is the seed (identity operation)
-        is_seed = (operation_idx == identity_idx)
-        seed_marker = " [SEED]" if is_seed else ""
-
-        print(f"  Member {member_idx}{seed_marker}:")
-        print(f"    Neighbor: {neighbor_atom.atom_name}")
-        print(f"    Cell: [{neighbor_atom.n0}, {neighbor_atom.n1}, {neighbor_atom.n2}]")
-        print(f"    Fractional coord: {neighbor_atom.frac_coord}")
-        print(f"    Cartesian coord: {neighbor_atom.cart_coord}")
-        print(f"    Operation index: {operation_idx}")
-        print(f"    Lattice shift n_vec: {n_vec}")
-        print(f"    Distance: {actual_distance:.6f}")
-        print()
-
-print("=" * 80)
-print("EQUIVALENCE CLASS PRINTING COMPLETE")
-print("=" * 80)
-
-# ==============================================================================
-# Convert all equivalence classes to hopping objects
-# ==============================================================================
-print("\n" + "=" * 80)
-print("CONVERTING EQUIVALENCE CLASSES TO HOPPINGS")
-print("=" * 80)
-
-all_hoppings = []
-
-for class_id, eq_class in enumerate(equivalence_classes_sorted):
-    # Convert this equivalence class to hopping objects
-    hoppings_in_class = equivalent_class_to_hoppings(
-        one_equivalent_class=eq_class,
-        center_atom=center_atom,
-        space_group_bilbao_cart=space_group_bilbao_cart,
-        identity_idx=identity_idx
-    )
-
-    # Store the list of hoppings for this equivalence class
-    all_hoppings.append(hoppings_in_class)
-
-    # Print summary for this equivalence class
-    print(f"\nEquivalence class {class_id}:")
-    print(f"  Distance: {hoppings_in_class[0].distance:.6f}")
-    print(f"  Number of hoppings: {len(hoppings_in_class)}")
-    print(f"  Hopping direction: {center_atom.atom_name} ← {hoppings_in_class[0].from_atom.atom_name}")
-
-    # Print each hopping in this class
-    for hop in hoppings_in_class:
-        print(f"    {hop}")
-
-print(f"\n{'=' * 80}")
-print(f"HOPPING CONVERSION COMPLETE")
-print(f"{'=' * 80}")
-print(f"Total equivalence classes: {len(all_hoppings)}")
-print(f"Total hoppings created: {sum(len(h) for h in all_hoppings)}")
-
-# ==============================================================================
-# Verify seed hoppings
-# ==============================================================================
-print(f"\n{'-' * 80}")
-print(f"SEED HOPPING VERIFICATION:")
-print(f"{'-' * 80}")
-for class_id, hoppings_in_class in enumerate(all_hoppings):
-    seed_count = sum(1 for hop in hoppings_in_class if hop.is_seed)
-    seed_hops = [hop for hop in hoppings_in_class if hop.is_seed]
-
-    print(f"Class {class_id}: {seed_count} seed hopping(s)")
-    if seed_count != 1:
-        print(f"  ⚠️  WARNING: Expected exactly 1 seed hopping!")
-    else:
-        seed_hop = seed_hops[0]
-        print(f"  ✓ Seed: {seed_hop}")
-
+#
 type_linear="linear"
 type_hermitian="hermitian"
 
+roots_for_atom_ind=construct_all_roots_for_1_atom(
+equivalent_classes_hoppings_for_atom_ind,
+identity_idx,
+type_linear,
+    True
+)
 
-def hopping_to_vertex(hopping,identity_idx):
-    if hopping.is_seed==True:
-        type=None
-    else:
-        type=type_linear
+print_tree_detailed(roots_for_atom_ind[2])
