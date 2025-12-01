@@ -573,10 +573,10 @@ class atomIndex:
 # ==============================================================================
 # Helper functions for atom operations
 # ==============================================================================
-def compute_dist(center_atom, unit_cell_atoms, search_range=8, radius=None, search_dim=2):
+def compute_dist(center_atom, unit_cell_atoms, search_range=10, radius=None, search_dim=2):
     """
     Find all atoms within a specified radius of a center atom by searching neighboring cells.
-    Returns constructed atomIndex objects for all neighbors found. The neighboring atom types are deternimed by
+    Returns constructed atomIndex objects for all neighbors found. The neighboring atom types are determined by
     unit_cell_atoms
     Args:
         center_atom: atomIndex object for the center atom
@@ -690,7 +690,7 @@ def find_identity_operation(space_group_bilbao_cart, tolerance=1e-9, verbose=Tru
     - Translation part: zero vector
 
     Args:
-        space_group_bilbao_cart: List or array of 4×4 or 3×4 space group matrices [R|t]
+        space_group_bilbao_cart: List or array of  3×4 space group matrices [R|t]
                                  in Cartesian coordinates
         tolerance: Numerical tolerance for comparison (default: 1e-9)
         verbose: Whether to print status messages (default: True)
@@ -826,19 +826,41 @@ class hopping:
 # ==============================================================================
 class vertex():
     """
-    Represents a node in the symmetry constraint tree  for tight-binding hopping matrices.
+    Represents a node in the symmetry constraint tree for tight-binding hopping matrices.
     Each vertex contains a hopping object, the hopping object contains hopping matrix of to_atom (center) ← from_atom (neighbor)
-     The tree structure represents how parent hopping generates this hopping by space group operations or Hermiticity constraints.
+    The tree structure represents how parent hopping generates this hopping by space group operations or Hermiticity constraints.
 
-     Tree Structure:
-     - Root vertex: Corresponds to the seed hopping (identity operation)
-     - Child vertices: Hoppings derived from parent through symmetry operations or Hermiticity
+    Tree Structure:
+      - Root vertex: Corresponds to the seed hopping (identity operation)
+      - Child vertices: Hoppings derived from parent through symmetry operations or Hermiticity
       - Constraint types: "linear" (from space group) or "hermitian" (from H† = H)
-    The vertex tree is used to:
-     1. Express derived hopping matrices in terms of independent matrices
+    The tree is used to:
+     1. Express derived hopping matrices in terms of independent matrices (in root)
      2. Enforce symmetry constraints automatically
      3. Reduce the number of independent tight-binding parameters
+
+     CRITICAL: Tree Structure Uses References (Pointers)
+     ================================================
+     The parent-child relationships are implemented using REFERENCES (C++ sense) / POINTERS (C sense):
+     - self.parent stores a REFERENCE to the parent vertex object (not a copy)
+     - self.children stores a list of REFERENCES to child vertex objects (not copies)
+
+     This means:
+     - Multiple vertices can reference the same parent object
+     - Modifying a parent's hopping matrix T affects all children's constraint calculations
+     - The tree forms a true graph structure in memory with shared nodes
+     - Deleting a vertex requires careful handling to avoid dangling references
+
+
+     Memory Diagram Example:
+     ----------------------
+     Root Vertex (id=0x1000) ──┬──> Child 1, linear (address=0x2000, parent address=0x1000)
+                               ├──> Child 2, linear (address=0x3000, parent address=0x1000)
+                               └──> Child 3, hermitian (address=0x4000, parent address=0x1000)
+    All three children have parent=0x1000 (same memory address)
+    Root's self.children = [0x2000, 0x3000, 0x4000] (references, not copies)
     """
+
     def __init__(self, hopping, type, identity_idx, parent=None):
         """
         Initialize a vertex in the tree.
@@ -852,15 +874,25 @@ class vertex():
             type: Constraint type that shows how this vertex is derived from its parent
                    - "linear": Derived from parent via space group symmetry operation
                    - "hermitian": Derived from parent via Hermiticity constraint
+                   - None: It is root vertex
             identity_idx: Index of the identity operation in space_group_bilbao_cart
                         Used to identify root vertices (hopping.operation_idx == identity_idx)
-            parent: Reference to parent vertex object (default: None for root)
-            This creates the tree structure linking vertices
-            NOT deep copied, because this is reference (reference in c++ sense, pointer in c sense)
+            parent: REFERENCE to parent vertex object (default: None for root)
+                    NOT deep copied - this is a reference (C++ sense) / pointer (C sense)
+
+                    Why parent is a reference:
+                     -------------------------
+                     1. Upward Traversal: Allows child → parent → root navigation
+                     2. Constraint Access: Child can read parent's hopping matrix T
+                     3. Shared Parent: Multiple children reference same parent object
+                     IMPORTANT: parent=None only for root vertices
+                                parent≠None for all derived vertices (children)
+
+
         """
         self.hopping = deepcopy(hopping) # Deep copy of hopping object containing:
                                          # - to_atom (center), from_atom (neighbor)
-                                         # - class_id, operation_idx
+                                         # - is_seed, operation_idx
                                         # - rotation_matrix R, translation_vector t, n_vec
                                         # - distance, T (hopping matrix)
 
@@ -870,9 +902,26 @@ class vertex():
                                                                 # Root vertex contains identity operation
                                                                 # Starting vertex of hopping matrix T propagation
 
-        self.children = []  # List of child vertex objects
-                            # Empty list for new vertex, populated via add_child() method
-                            # Children represent hoppings derived from this vertex
+        self.children = []  # List of REFERENCES to child vertex objects
+                            # CRITICAL: These are references (pointers), NOT deep copies!
+                            #
+                            # Why references are essential:
+                            # -----------------------------
+                            # 1. Tree Structure: Forms true parent-child graph in memory
+                            # 2. Constraint Propagation: Changes to root's T affect tree traversal
+                            # 3. Memory Efficiency: Avoids duplicating entire subtrees
+                            # 4. Bidirectional Links: Children can access parent via self.parent
+                            #
+                            # Usage:
+                            # ------
+                            # - Empty list [] at initialization (no children yet)
+                            # - Populated via add_child() method with vertex references
+                            # - Each element points to a vertex object in memory
+                            #
+                            # WARNING: Do NOT deep copy children when copying a vertex!
+                            #          This would break the tree structure.
+
+
         self.parent = parent  # Reference to parent vertex (None for root)
                               # NOT deep copied, because this is reference (reference in C++ sense, pointer in C sense)
                               # Forms bidirectional directed tree: parent ↔ children
@@ -880,22 +929,58 @@ class vertex():
     def add_child(self, child_vertex):
         """
         Add a child vertex to this vertex and set bidirectional parent-child relationship.
-        This method maintains the tree structure by:
-         1. Adding child to this vertex's children list
-         2. Setting this vertex as the child's parent
+
+        CRITICAL: Reference-Based Tree Construction
+        ===========================================
+        This method establishes bidirectional links using REFERENCES (pointers):
+        Before call:
+        -----------
+        self (parent vertex at address 0x1000):
+            self.children = [0x2000, 0x3000]  # existing children
+        child_vertex (at address 0x4000):
+            child_vertex.parent = None  # or some other parent #or this child is a root, we are adding a subtree
+
+        After self.add_child(child_vertex):
+        -----------------------------------
+        self (parent vertex at address 0x1000):
+            self.children = [0x2000, 0x3000, 0x4000]  # added reference 0x4000
+        child_vertex (at address 0x4000):
+            child_vertex.parent = 0x1000  # reference to self
+
         Args:
-            child_vertex: vertex object to add as a child
-            The child represents a hopping derived from this vertex's hopping
-            either through symmetry operation (type="linear")
-            or Hermiticity (type="hermitian")
+             child_vertex: vertex object to add as a child
+                           The child represents a hopping derived from this vertex's hopping
+                           either through symmetry operation (type="linear")
+                           or Hermiticity (type="hermitian")
+
+                           IMPORTANT: child_vertex is NOT deep copied
+                                      The REFERENCE to child_vertex is stored in self.children
 
         Returns:
-
+                None (modifies self.children and child_vertex.parent in-place
         """
-        self.children.append(child_vertex) # Add to this vertex's children list
+        self.children.append(child_vertex) # Add REFERENCE to child_vertex to this vertex's children list
+                                           # NOT a deep copy - the actual vertex object reference
+                                           # After this: self.children[-1] is child_vertex (same object)
+                                           #
+                                           # Memory effect:
+                                           # - self.children list grows by 1 element
+                                           # - That element is a reference (memory address) to child_vertex
+                                           # - No new vertex object is created
+
+
+
+
         child_vertex.parent = self  # Set bidirectional relationship: this vertex becomes the child's parent
-                                    # Stores reference (C++ sense) / pointer (C sense) to this vertex
-                                    # NOT a deep copy
+                                    # Stores new vertex parent's REFERENCE (C++ sense) / POINTER (C sense) to the new vertex
+                                    # NOT a deep copy - the actual parent vertex object reference
+                                    # After this: child_vertex.parent is self (same object)
+                                    #
+                                    # Memory effect:
+                                    # - child_vertex.parent now points to self's memory address
+                                    # - Creates upward link in tree: child → parent
+                                    # - Combined with append above: creates bidirectional edge
+                                    # WARNING: This overwrites any previous parent!
 
     def __repr__(self):
         """
@@ -923,7 +1008,7 @@ class vertex():
                 f"parent={parent_str}, "
                 f"children={len(self.children)})")
 
-def is_lattice_vector(vector, lattice_basis, tolerance=1e-6):
+def is_lattice_vector(vector, lattice_basis, tolerance=1e-5):
     """
     Check if a vector can be expressed as an integer linear combination of lattice basis vectors.
 
@@ -935,7 +1020,7 @@ def is_lattice_vector(vector, lattice_basis, tolerance=1e-6):
         vector: 3D vector to check (Cartesian coordinates)
         lattice_basis: Primitive lattice basis vectors (3×3 array, each row is a basis vector)
                       expressed in Cartesian coordinates using Bilbao origin
-        tolerance: Numerical tolerance for checking if coefficients are integers (default: 1e-6)
+        tolerance: Numerical tolerance for checking if coefficients are integers (default: 1e-5)
 
     Returns:
         tuple: (is_lattice, n_vector)
@@ -1122,8 +1207,8 @@ atom_types, fractional_positions, unit_cell_atoms = initialize_unit_cell_atoms(
 # ==============================================================================
 # Define neighbor search parameters
 # ==============================================================================
-search_range=8 # Number of unit cells to search in each direction
-               # Total search region: [-8, 8] × [-8, 8] for this 2d problem
+search_range=10 # Number of unit cells to search in each direction
+               # Total search region: [-10, 10] × [-10, 10] for this 2d problem
                # Larger values find more distant neighbors but increase computation time
 radius=1.05 * np.sqrt(3) # Cutoff distance in Cartesian coordinates
                          # Only atoms within this distance from center are considered neighbors
@@ -1138,7 +1223,7 @@ search_dim = 2  # Dimensionality of neighbor search
 # ==============================================================================
 # Find all neighbors for each atom in the unit cell
 # ==============================================================================
-# For each atom in the reference unit cell, find all neighboring atoms within
+# For each atom in the reference unit cell [0,0,0], find all neighboring atoms within
 # the specified radius by searching through neighboring unit cells.
 # This creates the hopping connectivity network for tight-binding calculations.
 all_neighbors = {}  # Dictionary mapping unit cell atom index → list of neighbor atomIndex objects
@@ -1463,32 +1548,79 @@ def get_equivalent_sets_for_one_center_atom(center_atom_idx, unit_cell_atoms, al
                                                 space_group_bilbao_cart, identity_idx,
                                                 tolerance=1e-5, verbose=False):
     """
-    Partition all neighbors of a center atom into equivalence classes based on symmetry.
-    Each equivalence class contains neighbors related by space group operations.
-    The algorithm:
-    1. Pop a seed atom from the remaining neighbors
+    Partition all neighbors of 1 center atom into equivalence classes based on symmetry.
+    Each equivalence class contains center atom's neighbors related by space group operations.
+    Algorithm:
+    ---------
+    1. Pop a seed atom from the remaining neighbors (arbitrary choice)
     2. Apply all space group operations to find symmetry-equivalent neighbors
-    3. Group these equivalent neighbors together
+    3. Group these equivalent neighbors together into one equivalence class
     4. Repeat until all neighbors are classified
+
+    CRITICAL: Reference Handling
+    ============================
+    This function works with REFERENCES to atomIndex objects throughout:
+    - neighbor_atoms_copy is a set of references to DEEP-COPIED atomIndex objects
+    - seed_atom = set.pop() returns a reference to one of these copied objects
+    - matched_neighbor from search is also a reference to one of these copied objects
+    - equivalence_classes stores tuples containing references to these copied objects
+
+    Why deep copy all_neighbors[center_atom_idx]?
+    ---------------------------------------------
+    We deep copy to DECOUPLE from the input:
+    1. The input all_neighbors should remain unchanged (it may be used elsewhere)
+    2. We destructively remove atoms from neighbor_atoms_copy as we classify them
+    3. Deep copy creates NEW atomIndex objects (independent of the input)
+    4. After deep copy:
+        - all_neighbors[center_atom_idx] still has all its original atomIndex objects
+        - neighbor_atoms_copy has completely separate atomIndex objects with same data
+        - Modifying neighbor_atoms_copy has NO effect on all_neighbors
     Args:
-        center_atom_idx:  Index of the center atom in unit_cell_atoms
+        center_atom_idx: Index of the center atom in unit_cell_atoms
         unit_cell_atoms: List of all atomIndex objects in the unit cell
-        all_neighbors: Dictionary mapping center atom index to list of neighbor atomIndex objects
-        space_group_bilbao_cart:  List of space group matrices in Cartesian coordinates
+        all_neighbors: Dictionary mapping center atom index → list of neighbor atomIndex objects
+        space_group_bilbao_cart: List of space group matrices in Cartesian coordinates
         identity_idx: Index of the identity operation
         tolerance: Numerical tolerance for comparisons (default: 1e-5)
         verbose: Whether to print debug information (default: False)
-
     Returns:
-        List of equivalence classes, where each class is a list of tuples
-        (matched_neighbor, operation_idx, n_vec) representing symmetry-equivalent neighbors
-
+        List of equivalence classes, where each class is a list of tuples:
+        (matched_neighbor, operation_idx, n_vec)
+        where:
+            - matched_neighbor: REFERENCE to deep-copied atomIndex object
+            - operation_idx: Space group operation that maps seed → matched_neighbor
+            - n_vec: Lattice translation vector [n₀, n₁, n₂] for this transformation
     """
-    # Extract center atom and make a working copy of neighbors as a set
+    # ==============================================================================
+    # Initialize working variables
+    # ==============================================================================
+    # Extract reference to center atom from unit cell
+    # This is a REFERENCE (not copied) - center_atom points to the same object in unit_cell_atoms
     center_atom = unit_cell_atoms[center_atom_idx]
+
+    # Create a working copy of neighbors as a set
+    # IMPORTANT: Deep copy to DECOUPLE from input all_neighbors
+    # ----------------------------------------------------------
+    # Why deep copy?
+    # - We will destructively remove atoms from neighbor_atoms_copy as we classify them
+    # - We must NOT modify the input all_neighbors (caller may need it unchanged)
+    # - Deep copy creates entirely NEW atomIndex objects (different memory addresses)
+    #   with the same data as the originals
+    #
+    # Memory structure after deep copy:
+    # - all_neighbors[center_atom_idx] = [obj_A, obj_B, obj_C, ...]  (original objects)
+    # - neighbor_atoms_copy = {obj_A', obj_B', obj_C', ...}  (NEW copied objects)
+    # - obj_A and obj_A' are DIFFERENT objects at DIFFERENT memory addresses
+    # - obj_A and obj_A' have the SAME data (same coordinates, same element, etc.)
+    # - Removing obj_A' from neighbor_atoms_copy does NOT affect all_neighbors
+    #
+    # Why set instead of list?
+    # - O(1) removal with set.remove() vs O(n) with list.remove()
+    # - No duplicates guaranteed
+    # - Order doesn't matter (symmetry operations find all equivalents)
     neighbor_atoms_copy = set(deepcopy(all_neighbors[center_atom_idx]))
 
-    # Store all equivalence classes
+    # Store all equivalence classes (list of lists of tuples)
     equivalence_classes = []
 
     # Class ID counter (increments for each new equivalence class found)
@@ -1500,33 +1632,64 @@ def get_equivalent_sets_for_one_center_atom(center_atom_idx, unit_cell_atoms, al
         print(f"Center atom: {center_atom}")
         print(f"Total neighbors to classify: {len(neighbor_atoms_copy)}")
 
+    # ==============================================================================
+    # Main loop: Partition neighbors into equivalence classes
+    # ==============================================================================
     # Continue until all neighbors are classified into equivalence classes
+    # Each iteration creates one equivalence class and removes its members from neighbor_atoms_copy
     while len(neighbor_atoms_copy) != 0:
         if verbose:
             print(f"\n{'-' * 60}")
             print(f"Starting new equivalence class (class_id={class_id})")
             print(f"Remaining unclassified neighbors: {len(neighbor_atoms_copy)}")
-        # STEP 1: Pop one seed atom from neighbor_atoms_copy
+        # ==============================================================================
+        # STEP 1: Select seed atom for this equivalence class
+        # ==============================================================================
+        # Pop one seed atom from neighbor_atoms_copy
         # This will be the representative atom for this equivalence class
-        # set.pop() removes and returns an arbitrary element (order is implementation-dependent)
+        #
+        # CRITICAL: set.pop() returns a REFERENCE, not a copy
+        # ------------------------------------------------
+        # - set.pop() removes and returns a reference to an arbitrary element
+        # - Order is implementation-dependent (hash table internals, not guaranteed)
+        # - Returns a REFERENCE to one of the deep-copied atomIndex objects
+        # - The atomIndex object is removed from the set but still exists in memory
+        # - seed_atom now holds a reference to that object
+        #
+        # Example:
+        # -------
+        # Before: neighbor_atoms_copy = {obj_A', obj_B', obj_C'}
+        # After:  seed_atom = obj_A' (reference to the copied object)
+        #         neighbor_atoms_copy = {obj_B', obj_C'}
+        #
+        # Remember: obj_A' is a COPY (independent of the original obj_A in all_neighbors)
+        #
         # The specific choice doesn't matter - symmetry operations will find all equivalent neighbors
         seed_atom = neighbor_atoms_copy.pop()
         # Pre-compute the distance from center to seed (used for all operations)
+        # This distance must be preserved by symmetry operations (isometry)
         center_seed_distance = np.linalg.norm(center_atom.cart_coord-seed_atom.cart_coord , ord=2)
 
         if verbose:
             print(f"\nSeed atom selected:")
             print(f"  {seed_atom}")
             print(f"  Distance from center: {center_seed_distance:.6f}")
+        # ==============================================================================
         # Initialize the current equivalence class
+        # ==============================================================================
+        # List of tuples: (neighbor_atom_reference, operation_idx, n_vec)
         current_equivalence_class = []
 
         # Add the seed atom itself with identity operation and zero lattice shift
+        # The identity operation maps seed_atom to itself (by definition)
+        # Tuple contains: (reference to seed_atom, identity_idx, zero vector)
         current_equivalence_class.append((seed_atom, identity_idx, np.array([0, 0, 0])))
         if verbose:
             print(f"  Added seed atom to equivalence class with identity operation")
 
-        # STEP 2: For each space group operation, try to find equivalent atoms
+        # ==============================================================================
+        # STEP 2: Find all symmetry-equivalent neighbors
+        # ==============================================================================
         # Iterate through all space group operations to find atoms equivalent to seed
         # Skip the identity operation since we already added the seed atom
         for operation_idx in range(len(space_group_bilbao_cart)):
@@ -1537,6 +1700,7 @@ def get_equivalent_sets_for_one_center_atom(center_atom_idx, unit_cell_atoms, al
                 print(f"\nTrying operation {operation_idx}:")
             # Apply the space group operation to the seed atom
             # This generates a transformed position that may correspond to another neighbor
+            # Returns (transformed_coord, n_vec) if valid, None otherwise
             result = get_next_for_center(
                 center_atom=center_atom,
                 seed_atom=seed_atom,
@@ -1547,30 +1711,68 @@ def get_equivalent_sets_for_one_center_atom(center_atom_idx, unit_cell_atoms, al
                 tolerance=tolerance,
                 verbose=verbose
             )
+            # ==============================================================================
+            # Process valid transformation results
+            # ==============================================================================
             # If transformation is valid (center invariant, distance preserved)
             if result is not None:
                 # Unpack the transformed coordinate and lattice shift vector
+                # transformed_coord: 3D Cartesian position after applying symmetry operation
+                # n_vec: Lattice translation [n₀, n₁, n₂] needed to preserve center invariance
                 transformed_coord, n_vec = result
                 if verbose:
                     print(f"  Valid transformation generated:")
                     print(f"    Transformed coord: {transformed_coord}")
                     print(f"    Lattice shift n_vec: {n_vec}")
+                # ==============================================================================
+                # Search for matching neighbor in the remaining unclassified set
+                # ==============================================================================
                 # Search for this transformed position among the remaining neighbors
-                # matched_neighbor is a reference
+                # CRITICAL: matched_neighbor is a REFERENCE, not a copy
+                # ---------------------------------------------------
+                # search_one_equivalent_atom() returns:
+                # - A REFERENCE to an atomIndex object in neighbor_atoms_copy if match found
+                # - None if no match found
+                #
+                # This reference is ESSENTIAL for set.remove() to work:
+                # - Python's set.remove() uses object identity (memory address)
+                # - We need the EXACT SAME object reference that's in the set
+                # - A copy wouldn't work (different object, different identity)
+                #
+                # Remember: matched_neighbor references a COPIED atomIndex object (obj_X')
+                # NOT an original from all_neighbors (obj_X)
                 matched_neighbor = search_one_equivalent_atom(
                     target_cart_coord=transformed_coord,
                     neighbor_atoms_copy=neighbor_atoms_copy,
                     tolerance=tolerance,
                     verbose=verbose
                 )
+                # ==============================================================================
+                # Add matched neighbor to equivalence class
+                # ==============================================================================
                 # If we found a matching neighbor in the remaining set
                 if matched_neighbor is not None:
                     if verbose:
                         print(f"  ✓ Found equivalent neighbor: {matched_neighbor}")
                     # Add to current equivalence class
-                    # Store as (matched_neighbor, operation_idx, n_vec) for hopping construction
+                    # Store tuple: (reference to matched_neighbor, operation_idx, copy of n_vec)
+                    # - matched_neighbor: REFERENCE to a deep-copied atomIndex object (from neighbor_atoms_copy)
+                    # - operation_idx: Which space group operation maps seed → matched_neighbor
+                    # - deepcopy(n_vec): Copy of lattice translation vector (n_vec is numpy array, mutable)
                     current_equivalence_class.append((matched_neighbor, operation_idx, deepcopy(n_vec)))
                     # Remove from the working set (it's now classified)
+                    # CRITICAL: This only works because matched_neighbor is a REFERENCE
+                    # ----------------------------------------------------------------
+                    # set.remove() searches for object by identity (memory address)
+                    # - matched_neighbor points to the exact same object in neighbor_atoms_copy
+                    # - Python finds the object by comparing memory addresses (fast, O(1))
+                    # - If matched_neighbor were a copy, remove() would raise KeyError
+                    #
+                    # After removal:
+                    # - The atomIndex object still exists in memory (referenced by matched_neighbor
+                    #   and by the tuple in current_equivalence_class)
+                    # - It's just no longer in the neighbor_atoms_copy set
+                    # - The original object in all_neighbors is completely unaffected
                     neighbor_atoms_copy.remove(matched_neighbor)
                     if verbose:
                         print(f"  Removed from unclassified set. Remaining: {len(neighbor_atoms_copy)}")
@@ -1580,12 +1782,22 @@ def get_equivalent_sets_for_one_center_atom(center_atom_idx, unit_cell_atoms, al
             else:
                 if verbose:
                     print(f"  ✗ Transformation invalid (center not invariant or distance not preserved)")
+
+        # ==============================================================================
+        # Complete this equivalence class
+        # ==============================================================================
         # Add the completed equivalence class to the list
+        # equivalence_classes is a list of lists of tuples
+        # Each tuple contains: (reference to deep-copied atomIndex, operation_idx, n_vec)
         equivalence_classes.append(current_equivalence_class)
         if verbose:
             print(f"\nEquivalence class {class_id} completed with {len(current_equivalence_class)} members")
         # Increment class ID for next equivalence class
         class_id += 1
+
+    # ==============================================================================
+    # Return results
+    # ==============================================================================
 
     if verbose:
         print(f"\n{'=' * 80}")
@@ -1604,38 +1816,53 @@ def equivalent_class_to_hoppings(one_equivalent_class, center_atom,
                                   space_group_bilbao_cart, identity_idx):
     """
     Convert an equivalence class of neighbor atoms into hopping objects.
-     Each neighbor atom in the equivalence class is saved into a hopping object
-     The hopping contains all symmetry information (operation index, rotation, translation, lattice shift).
+    Each neighbor atom in the equivalence class is saved into a hopping object.
+    The hopping contains all symmetry information (operation index, rotation, translation, lattice shift).
 
     This function transforms the raw equivalence class data (tuples of neighbor atoms,
     operations, and lattice shifts) into structured hopping objects that encapsulate
-    all information needed for tight-binding calculations and symmetry constraints.
+    all information needed for one class of equivalent hoppings (center ← neighbor) and symmetry constraints.
+
     Args:
-        one_equivalent_class:  List of tuples (neighbor_atom, operation_idx, n_vec)
-                                where:
-                                      - neighbor_atom: atomIndex object for the neighbor
-                                      - operation_idx: Index of space group operation that maps
-                                                        seed atom  to this neighbor
-                                      - n_vec: Array [n₀, n₁, n₂] of lattice translation coefficients
+        one_equivalent_class: List of tuples (neighbor_atom, operation_idx, n_vec)
+                              where:
+                              - neighbor_atom: atomIndex object for the neighbor
+                              - operation_idx: Index of space group operation that maps
+                                              seed atom to this neighbor
+                              - n_vec: Array [n₀, n₁, n₂] of lattice translation coefficients
         center_atom: atomIndex object for the center atom (hopping destination)
-                                All hoppings in this equivalence class have the same center atom
-        space_group_bilbao_cart: List of space group matrices in Cartesian coordinates
-                                 using Bilbao origin (shape: num_ops × 3 × 4)
-                                 Used to extract rotation R and translation t for each operation
+                    All hoppings in this equivalence class have the same center atom
+         space_group_bilbao_cart: List of space group matrices in Cartesian coordinates
+                                using Bilbao origin (shape: num_ops × 3 × 4)
+                                Used to extract rotation R and translation t for each operation
+
         identity_idx: Index of the identity operation in space_group_bilbao_cart
-                      Used to identify which hopping is the seed (root of constraint tree)
+                     Used to identify which hopping is the seed (root of constraint tree)
 
     Returns:
-        List of hopping objects, one for each member of the equivalence class.
+        List of hopping objects (deep copied for complete independence).
         Each hopping represents: center ← neighbor
         The list contains:
         - One seed hopping (with operation_idx == identity_idx, is_seed=True)
         - Multiple derived hoppings (with other operation indices, is_seed=False)
         All hoppings in the list have the same distance (up to numerical precision)
-
+    Deep Copy Strategy:
+        This function returns a DEEP COPY of the entire hopping list to ensure
+        complete independence between the returned data and any internal state.
+        Two-level protection:
+            1. Each hopping object is deep copied before adding to the list
+            2. The entire list is deep copied before returning
+        This guarantees:
+        - No shared references to the list container
+        - No shared references to hopping objects
+        - No shared references to atom objects or numpy arrays
+        - Caller has complete ownership and can modify freely
     """
+    # Initialize hopping list
     hoppings = []
-    # Iterate through each member of the equivalence class
+
+
+    # Convert each equivalence class member to a hopping object
     for neighbor_atom, operation_idx, n_vec in one_equivalent_class:
         # Extract rotation matrix R and translation vector t for this operation
         # The space group operation [R|t] transforms the seed neighbor to this neighbor
@@ -1658,8 +1885,11 @@ def equivalent_class_to_hoppings(one_equivalent_class, center_atom,
         # All hoppings in this equivalence class should have the same distance
         hop.compute_distance()
         # Add this hopping to the list
-        hoppings.append(hop)
-    return hoppings
+        # Deep copy hopping before adding to list (first level of protection)
+        hoppings.append(deepcopy(hop))
+    # Deep copy entire list before returning (second level of protection)
+    # This ensures complete independence: both list structure and contents are copied
+    return deepcopy(hoppings)
 
 
 ind=1
@@ -1789,3 +2019,12 @@ for class_id, hoppings_in_class in enumerate(all_hoppings):
         seed_hop = seed_hops[0]
         print(f"  ✓ Seed: {seed_hop}")
 
+type_linear="linear"
+type_hermitian="hermitian"
+
+
+def hopping_to_vertex(hopping,identity_idx):
+    if hopping.is_seed==True:
+        type=None
+    else:
+        type=type_linear
