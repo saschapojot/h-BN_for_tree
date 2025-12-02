@@ -288,7 +288,7 @@ combined_input = {
     "space_group_representations": space_group_representations
 }
 
-# Convert to JSON for subprocess
+# Convert to JSO N for subprocess
 combined_input_json = json.dumps(combined_input)
 
 # Run complete_orbitals.py
