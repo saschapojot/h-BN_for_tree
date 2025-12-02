@@ -2440,4 +2440,220 @@ type_linear,
     True
 )
 
-print_tree_detailed(roots_for_atom_ind[2])
+print_all_trees(roots_for_atom_ind)
+def check_hopping_hermitian(hopping1, hopping2, space_group_bilbao_cart,
+                            lattice_basis, tolerance=1e-5, verbose=False):
+    """
+    Check if hopping2 is the Hermitian conjugate of hopping1.
+    For tight-binding models, Hermiticity requires:
+        H† = H  =>  T(i ← j) = T(j ← i)†
+
+    This function checks if hopping2 corresponds to the reverse direction of hopping1
+    under some space group operation with lattice translation.
+
+    Mathematical Condition:
+    ----------------------
+    Given hopping1: center1 ← neighbor1
+          And hopping2: center2 ← neighbor2
+    hopping2 is Hermitian conjugate of hopping1 if there exists a space group
+    operation g = (R|t) and lattice shift n_vec = [n0, n1, n2] such that:
+    1. The conjugate of hopping2 (neighbor2 ← center2) equals the transformed hopping1
+    2. Specifically: R @ (center1 - neighbor1) + t + n_vec·[a0,a1,a2] = neighbor2 - center2
+
+    This means the hopping vector transforms consistently under the symmetry operation.
+    Args:
+        hopping1: First hopping object (reference hopping)
+        hopping2: Second hopping object (candidate Hermitian conjugate)
+        space_group_bilbao_cart: List of space group matrices in Cartesian coordinates
+                                using Bilbao origin (shape: num_ops × 3 × 4)
+        lattice_basis: Primitive lattice basis vectors (3×3 array, each row is a basis vector)
+                      expressed in Cartesian coordinates using Bilbao origin
+        tolerance: Numerical tolerance for comparison (default: 1e-5)
+        verbose: Whether to print debug information (default: False)
+
+    Returns:
+        tuple: (is_hermitian, operation_idx, n_vec)
+        - is_hermitian (bool): True if hopping2 is Hermitian conjugate of hopping1
+        - operation_idx (int or None): Index of the space group operation that
+                                        relates hopping1 to hopping2, or None if not Hermitian conjugate
+        - n_vec (ndarray or None): Lattice translation vector [n0, n1, n2],
+                                   or None if not Hermitian conjugate
+
+    Example:
+        For hBN with hopping1: N[0,0,0] ← B[0,0,0]
+        and hopping2: B[0,0,0] ← N[0,0,0]
+        These are Hermitian conjugates under identity operation with zero lattice shift.
+    """
+    if verbose:
+        print("\n" + "=" * 60)
+        print("CHECKING HERMITIAN CONJUGATE RELATIONSHIP")
+        print("=" * 60)
+        print(f"Hopping 1: {hopping1}")
+        print(f"Hopping 2: {hopping2}")
+    # ==============================================================================
+    # STEP 1: Get atoms from both hoppings
+    # ==============================================================================
+    # hopping1: to_atom1 (center) ← from_atom1 (neighbor)
+    to_atom1 = hopping1.to_atom
+    from_atom1 = hopping1.from_atom
+
+    # hopping2: to_atom2 (center) ← from_atom2 (neighbor)
+    # For Hermiticity, we need the CONJUGATE (reverse direction)
+    # conjugate of hopping2: to_atom2c (becomes center) ← from_atom2c (becomes neighbor)
+    to_atom2c, from_atom2c = hopping2.conjugate()
+
+    if verbose:
+        print(f"\nHopping 1 direction: {to_atom1.atom_name} ← {from_atom1.atom_name}")
+        print(f"Hopping 2 conjugate: {to_atom2c.atom_name} ← {from_atom2c.atom_name}")
+
+    # ==============================================================================
+    # STEP 2: Compute hopping vectors in Cartesian coordinates
+    # ==============================================================================
+    # Hopping vector for hopping1: points from neighbor to center
+    # This is the displacement vector of the hopping
+    hopping_vec1 = to_atom1.cart_coord - from_atom1.cart_coord
+
+    # Hopping vector for conjugate of hopping2
+    # For Hermiticity, this should equal the transformed hopping_vec1
+    hopping_vec2_conj = to_atom2c.cart_coord - from_atom2c.cart_coord
+
+    if verbose:
+        print(f"\nHopping vector 1: {hopping_vec1}")
+        print(f"Hopping vector 2 (conjugate): {hopping_vec2_conj}")
+
+    # ==============================================================================
+    # STEP 3: Search for space group operation relating the two hoppings
+    # ==============================================================================
+    # Iterate through all space group operations to find one that transforms
+    # hopping1 into the conjugate of hopping2
+    for op_idx in range(len(space_group_bilbao_cart)):
+        # Extract rotation R and translation t from space group operation
+        R, t = get_rotation_translation(space_group_bilbao_cart, op_idx)
+
+        if verbose:
+            print(f"\nTrying operation {op_idx}:")
+
+        # ==============================================================================
+        # Check whether R @ hopping_vec1 + t + n0*a0 + n1*a1 + n2*a2 = hopping_vec2_conj
+        # ==============================================================================
+        # Apply rotation to hopping vector
+        transformed_vec = R @ hopping_vec1 + t
+
+        # Calculate required lattice shift
+        # We need: transformed_vec + n_vec·[a0,a1,a2] = hopping_vec2_conj
+        # Therefore: n_vec·[a0,a1,a2] = hopping_vec2_conj - transformed_vec
+        required_lattice_shift = hopping_vec2_conj - transformed_vec
+
+        if verbose:
+            print(f"  Transformed hopping_vec1: {transformed_vec}")
+            print(f"  Required lattice shift: {required_lattice_shift}")
+
+        # Check if required_lattice_shift is a lattice vector
+        # (i.e., can be expressed as n0*a0 + n1*a1 + n2*a2 with integer n0, n1, n2)
+        is_lattice, n_vec = is_lattice_vector(
+            required_lattice_shift,
+            lattice_basis,
+            tolerance
+        )
+
+        if verbose:
+            print(f"  Is lattice vector: {is_lattice}")
+            if is_lattice:
+                print(f"  Lattice shift coefficients n_vec: {n_vec}")
+
+        # ==============================================================================
+        # If lattice vector found, verify and return
+        # ==============================================================================
+        if is_lattice:
+            # Double-check: verify the transformation explicitly
+            a0, a1, a2 = lattice_basis[0], lattice_basis[1], lattice_basis[2]
+            n0, n1, n2 = n_vec[0], n_vec[1], n_vec[2]
+            lattice_translation = n0 * a0 + n1 * a1 + n2 * a2
+
+            # Full transformation: R @ hopping_vec1 + t + n_vec·[a0,a1,a2]
+            full_transform = transformed_vec + lattice_translation
+
+            # Check if this equals hopping_vec2_conj
+            difference = hopping_vec2_conj - full_transform
+
+            if np.linalg.norm(difference) < tolerance:
+                if verbose:
+                    print(f"\n✓ HERMITIAN CONJUGATE FOUND!")
+                    print(f"  Operation index: {op_idx}")
+                    print(f"  Lattice shift: n_vec = {n_vec}")
+                    print(f"  Verification: ||difference|| = {np.linalg.norm(difference):.2e}")
+
+                return True, op_idx, n_vec.astype(int)
+
+            elif verbose:
+                print(f"  ✗ Lattice vector found but transformation doesn't match")
+                print(f"    Difference: {np.linalg.norm(difference):.2e}")
+
+    # ==============================================================================
+    # No Hermitian relationship found
+    # ==============================================================================
+    if verbose:
+        print(f"\n✗ No Hermitian conjugate relationship found")
+        print(f"  Searched through {len(space_group_bilbao_cart)} operations")
+
+    return False, None, None
+
+
+def add_to_root_hermitian(root1, root2, space_group_bilbao_cart,
+                          lattice_basis, type_hermitian, tolerance=1e-5, verbose=False):
+    """
+    If root2's hopping is hermitian conjugate of root1's hopping,
+    add root2 as root1's child with hermitian constraint.
+    This function checks if root2 is the Hermitian conjugate of root1 under
+    some space group operation. If so, it adds root2 as a child of root1 with
+    the specified hermitian type and updates root2's properties accordingly.
+
+    Args:
+        root1: First root vertex (parent)
+        root2: Second root vertex (candidate hermitian conjugate)
+        space_group_bilbao_cart: List of space group matrices in Cartesian coordinates
+        lattice_basis: Primitive lattice basis vectors (3×3 array)
+        type_hermitian: String identifier for hermitian constraint type (e.g., "hermitian")
+        tolerance: Numerical tolerance for comparison (default: 1e-5)
+        verbose: Whether to print debug information (default: False)
+
+    Returns:
+        bool: True if root2 was added as hermitian child of root1, False otherwise
+    Example:
+        For hBN:
+        root1: N[0,0,0] ← B[0,0,0]
+        root2: B[0,0,0] ← N[0,0,0]
+        add_to_root_hermitian(root1, root2, ..., "hermitian") will add root2
+        as hermitian child of root1 with type="hermitian"
+    """
+    hopping1=root1.hopping
+    hopping2=root2.hopping
+
+    # Check if hopping2 is hermitian conjugate of hopping1
+    is_hermitian, op_idx,n_vec=check_hopping_hermitian(
+        hopping1,hopping2,space_group_bilbao_cart,
+        lattice_basis, tolerance, verbose)
+    if is_hermitian==True:
+        # Add root2 as root1's child
+        root1.add_child(root2)
+        # Set root2 properties for hermitian conjugate relationship
+        root2.type = type_hermitian
+        root2.is_root = False
+        root2.parent = root1
+        root2.hopping.operation_idx = op_idx
+        root2.hopping.n_vec=deepcopy(n_vec)
+        if verbose:
+            print(f"\n✓ Added hermitian relationship:")
+            print(f"  Parent (root1): {hopping1}")
+            print(f"  Child (root2): {hopping2}")
+            print(f"  Type: {type_hermitian}")
+            print(f"  Operation idx: {op_idx}")
+            print(f"  Lattice shift: {n_vec}")
+        return True
+    else:
+        if verbose:
+            print(f"\n✗ No hermitian relationship found")
+            print(f"  root1: {hopping1}")
+            print(f"  root2: {hopping2}")
+        return False
+
