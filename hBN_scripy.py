@@ -2320,10 +2320,22 @@ def print_all_trees(roots_list, show_details=True, max_trees=None, max_depth=Non
     print("CONSTRAINT TREE STRUCTURES")
     print("=" * 80)
 
-    num_trees = len(roots_list) if max_trees is None else min(max_trees, len(roots_list))
+    # CRITICAL FIX: Filter to only include actual roots (is_root == True)
+    # ================================================================
+    # ADD THIS LINE RIGHT HERE - it filters out grafted vertices
+    actual_roots = [root for root in roots_list if root.is_root]
+
+    # Print diagnostic if non-root vertices found in the list
+    if len(actual_roots) < len(roots_list):
+        print(f"\nNote: Input list contained {len(roots_list)} vertices")
+        print(f"      Filtered to {len(actual_roots)} actual roots")
+        print(f"      ({len(roots_list) - len(actual_roots)} vertices were grafted as hermitian children)\n")
+
+    # Use actual_roots instead of roots_list for counting
+    num_trees = len(actual_roots) if max_trees is None else min(max_trees, len(actual_roots))
 
     for i in range(num_trees):
-        root = roots_list[i]
+        root = actual_roots[i]  # Changed from roots_list[i] to actual_roots[i]
         hop = root.hopping
 
         print(f"\n{'─' * 80}")
@@ -2333,8 +2345,8 @@ def print_all_trees(roots_list, show_details=True, max_trees=None, max_depth=Non
 
         print_tree(root, show_details=show_details, max_depth=max_depth)
 
-    if max_trees is not None and len(roots_list) > max_trees:
-        print(f"\n... and {len(roots_list) - max_trees} more trees")
+    if max_trees is not None and len(actual_roots) > max_trees:
+        print(f"\n... and {len(actual_roots) - max_trees} more trees")
 
     print("\n" + "=" * 80)
 
@@ -2350,18 +2362,23 @@ def print_tree_summary(roots_list):
     print("CONSTRAINT TREE SUMMARY")
     print("=" * 80)
 
-    total_vertices = sum(1 + len(root.children) for root in roots_list)
-    total_children = sum(len(root.children) for root in roots_list)
+    # Filter to actual roots only
+    actual_roots = [root for root in roots_list if root.is_root]
 
-    print(f"\nTotal trees: {len(roots_list)}")
+    total_vertices = sum(1 + len(root.children) for root in actual_roots)
+    total_children = sum(len(root.children) for root in actual_roots)
+
+    print(f"\nTotal actual roots: {len(actual_roots)}")
+    if len(actual_roots) < len(roots_list):
+        print(f"  (Filtered from {len(roots_list)} vertices in input list)")
     print(f"Total vertices: {total_vertices}")
-    print(f"Total root vertices: {len(roots_list)}")
+    print(f"Total root vertices: {len(actual_roots)}")
     print(f"Total child vertices: {total_children}")
 
     print(f"\n{'Tree':<6} {'Distance':<12} {'Hopping':<30} {'Children':<10}")
     print("─" * 80)
 
-    for i, root in enumerate(roots_list):
+    for i, root in enumerate(actual_roots):
         hop = root.hopping
         hopping_str = f"{hop.to_atom.atom_name} ← {hop.from_atom.atom_name}"
         print(f"{i:<6} {hop.distance:<12.6f} {hopping_str:<30} {len(root.children):<10}")
@@ -2481,6 +2498,21 @@ def check_hopping_hermitian(hopping1, hopping2, space_group_bilbao_cart,
     # For Hermiticity, we need the CONJUGATE (reverse direction)
     # conjugate of hopping2: to_atom2c (becomes center) ← from_atom2c (becomes neighbor)
     to_atom2c, from_atom2c = hopping2.conjugate()
+
+    to_atom1_name=to_atom1.atom_name
+    from_atom1_name=from_atom1.atom_name
+
+    to_atom2c_name=to_atom2c.atom_name
+    from_atom2c_name=from_atom2c.atom_name
+    dist1=hopping1.distance
+    dist2=hopping2.distance
+
+    if np.abs(dist1-dist2)>tolerance:
+        return False, None, None
+
+    if to_atom1_name!=to_atom2c_name or from_atom1_name!=from_atom2c_name:
+        return False, None, None
+
 
     if verbose:
         print(f"\nHopping 1 direction: {to_atom1.atom_name} ← {from_atom1.atom_name}")
@@ -2720,11 +2752,11 @@ def generate_all_trees_for_unit_cell(unit_cell_atoms,all_neighbors,space_group_b
     Each constraint tree in the returned forest has this structure:
         Root Vertex (seed hopping, identity operation, is_root=True)
          │
-         ├── Child 1 (linear constraint, symmetry operation 1, type="linear")
-         ├── Child 2 (linear constraint, symmetry operation 2, type="linear")
-         ├── Child 3 (linear constraint, symmetry operation 3, type="linear")
-         └── Child 4 (linear constraint, symmetry operation 4, type="linear")
-         └── Child 5 (linear constraint, symmetry operation 5, type="linear")
+         ├── Child 0 (linear constraint, symmetry operation 1, type="linear")
+         ├── Child 1 (linear constraint, symmetry operation 2, type="linear")
+         ├── Child 2 (linear constraint, symmetry operation 3, type="linear")
+         └── Child 3 (linear constraint, symmetry operation 4, type="linear")
+         └── Child 4 (linear constraint, symmetry operation 5, type="linear")
     The root contains the independent hopping matrix (free parameters, determined by root stabilizers, this will be computed after tree graftings).
     Each child's matrix is determined by applying a symmetry transformation:
         T_child = V1(g) @ T_root @ V2(g)^†
@@ -2835,5 +2867,361 @@ def generate_all_trees_for_unit_cell(unit_cell_atoms,all_neighbors,space_group_b
                   f"Total trees: {len(roots_all)}")
     return roots_all
 
-roots_all=generate_all_trees_for_unit_cell(unit_cell_atoms,all_neighbors,space_group_bilbao_cart,identity_idx,type_linear,type_hermitian,True)
 
+
+def grafting_to_existing_hermitian(roots_grafted_hermitian,root_to_be_grafted,space_group_bilbao_cart,lattice_basis,type_hermitian,tolerance=1e-5, verbose=False):
+    """
+    Attempt to graft a new tree onto an existing collection of Hermitian-connected trees.
+
+    This function checks if root_to_be_grafted is the Hermitian conjugate of any tree
+    in the roots_grafted_hermitian collection. If a Hermitian relationship is found,
+    the new tree is grafted onto the matching tree and incorporated into the collection.
+
+    Grafting Strategy:
+    -----------------
+    This function implements an "early exit" strategy:
+    - Iterate through existing Hermitian-grafted trees
+    - Check each one for Hermitian relationship with the new tree
+    - On first match, graft and immediately return True
+    - If no matches found after checking all, return False
+
+    Use Case:
+    --------
+    This is called when finding the Hermiticity constraints between roots.
+    As each new root is encountered, we check if it can be grafted onto any existing
+    tree in roots_grafted_hermitian. If yes, it joins that tree. If no, check the next tree
+    in  roots_grafted_hermitian, until all trees are iterated.
+
+
+    Args:
+        roots_grafted_hermitian  (list): List of root vertex objects representing
+                                         roots that may accept hermitian tree grafting.
+                                         IMPORTANT: Modified in-place when grafting occurs
+                                       (tree structures grow, but list itself unchanged).
+        root_to_be_grafted (vertex): New root vertex attempting to be grafted.
+                                     If grafting succeeds
+                                     - Becomes a hermitian child of a root in roots_grafted_hermitian
+                                     - is_root changes from True to False
+                                     - type changes from None to type_hermitian
+                                     - Entire subtree moves with it
+                                     If grafting fails:
+                                     - Remains independent
+
+        space_group_bilbao_cart (list of np.ndarray): Space group operations in Cartesian
+                                                      coordinates using Bilbao origin.
+        lattice_basis: Primitive lattice basis vectors (3×3 array).
+                       Each row is a basis vector in Cartesian coordinates
+                       using Bilbao origin.
+        type_hermitian (str): String identifier for Hermitian constraint type.
+                              value:  "hermitian".
+                              Assigned to root_to_be_grafted.type upon successful grafting.
+        tolerance (float, optional): Numerical tolerance for coordinate and distance
+                                      comparisons. Default: 1e-5
+        verbose (bool, optional):  Print detailed diagnostics for debugging.
+                                   Default: False
+
+    Returns:
+         bool: True if root_to_be_grafted was successfully grafted onto one of the
+               existing roots in roots_grafted_hermitian.
+               False if no Hermitian relationship found with any existing root.
+    Side Effects:
+            If grafting succeeds (returns True):
+            - One root in roots_grafted_hermitian gains root_to_be_grafted as a Hermitian child
+            - root_to_be_grafted.is_root: True → False
+            - root_to_be_grafted.type: None → type_hermitian
+            - root_to_be_grafted.parent: None → matching root from roots_grafted_hermitian
+            - root_to_be_grafted.hopping.operation_idx: Updated to symmetry operation index
+            - root_to_be_grafted.hopping.n_vec: Updated to lattice translation vector
+            - Entire subtree under root_to_be_grafted moves as a unit
+
+            The roots_grafted_hermitian list itself is NOT modified (same number of elements),
+            but the tree structures it contains ARE modified (one tree gains a new Hermitian subtree).
+
+    Physical Meaning:
+    If grafting succeeds with root1 ∈ roots_grafted_hermitian:
+    T(root_to_be_grafted) = [V1(g)T(root1)V2(g)†]†
+
+    Algorithm Complexity:
+            Time: O(n × m) where:
+            n = len(roots_grafted_hermitian)
+            m = number of space group operations (checked in check_hopping_hermitian)
+            Space: O(1) (in-place modification, no new data structures)
+    Notes:
+        - Uses "first match wins" - grafts to first Hermitian conjugate found
+        - Order of roots_grafted_hermitian affects which tree receives the graft
+        - If multiple Hermitian relationships exist, only first is used
+        - Early exit optimization: stops after first successful graft
+
+    """
+    # ==============================================================================
+    # MAIN LOOP: Search for Hermitian relationship with existing roots
+    # ==============================================================================
+    # Iterate through each root that has already been processed for Hermitian grafting
+    # These roots may already have Hermitian children from previous grafting operations
+    for root1 in roots_grafted_hermitian:
+        # ======================================================================
+        # STEP 1: Check Hermitian conjugate relationship
+        # ======================================================================
+        # Test if root_to_be_grafted is the Hermitian conjugate of root1
+        # under some space group symmetry operation with lattice translation
+        #
+        # Mathematically checks if ∃ symmetry operation g=(R|t) and lattice shift n_vec
+        # such that the hopping vectors satisfy:
+        #   R @ (center1 - neighbor1) + t + n_vec·[a₀,a₁,a₂] = neighbor2 - center2
+        #
+        # where (center1 ← neighbor1) is root1's hopping
+        #   and (center2 ← neighbor2) is root_to_be_grafted's hopping (needs to be reversed)
+        is_hermitian,op_idx,n_vec=check_hopping_hermitian(
+            root1.hopping,               # Reference hopping from existing root
+            root_to_be_grafted.hopping,  # Candidate hopping to be grafted
+            space_group_bilbao_cart,     # All space group operations to try
+            lattice_basis,               # Crystal lattice vectors [a₀, a₁, a₂]
+            tolerance,                   # Numerical precision threshold
+            verbose                      # Enable debug output if True
+        )
+        # ======================================================================
+        # STEP 2: Perform grafting if Hermitian relationship found
+        # ======================================================================
+        if is_hermitian==True:
+            # ✓ Hermitian conjugate relationship confirmed!
+            # Now graft root_to_be_grafted onto root1 as a Hermitian child
+            #
+            # This operation will:
+            # 1. Add root_to_be_grafted to root1.children list (as a reference, not copy)
+            # 2. Set root_to_be_grafted.parent = root1 (bidirectional link)
+            # 3. Set root_to_be_grafted.is_root = False (no longer independent)
+            # 4. Set root_to_be_grafted.type = type_hermitian (mark constraint type)
+            # 5. Store symmetry info: root_to_be_grafted.hopping.operation_idx = op_idx
+            # 6. Store lattice shift: root_to_be_grafted.hopping.n_vec = n_vec
+            #
+            # Physical consequence:
+            # T(root_to_be_grafted) = [V1(g)T(root1)V2(g)†]†
+            #   No new free parameters needed - hopping matrix is fully determined
+            add_to_root_hermitian(
+                root1,                      # Parent: existing root
+                root_to_be_grafted,         # Child: tree being grafted (becomes dependent)
+                space_group_bilbao_cart,    # Space group operations
+                lattice_basis,              # Lattice vectors
+                type_hermitian,             # Constraint type label, "hermitian"
+                tolerance,                  # Numerical precision
+                verbose                     # Debug output flag
+            )
+            # ==================================================================
+            # EARLY EXIT: Grafting successful
+            # ==================================================================
+            # We successfully grafted root_to_be_grafted onto root1
+            # No need to check remaining roots in roots_grafted_hermitian
+            #
+            # Early exit benefits:
+            # - Saves computation (don't check remaining roots)
+            # - Prevents multiple grafting (tree can only have one parent)
+            # - First match wins
+            #
+            # Return True to signal successful grafting to caller
+            return True
+    # ==============================================================================
+    # NO HERMITIAN RELATIONSHIP FOUND
+    # ==============================================================================
+    # We've iterated through ALL roots in roots_grafted_hermitian
+    # and found NO Hermitian conjugate relationship
+    #
+    # This means root_to_be_grafted cannot be grafted to any existing  root in  roots_grafted_hermitian
+    # Return False to signal grafting was not possible
+    return False
+
+
+def tree_grafting_hermitian(roots_all,space_group_bilbao_cart,lattice_basis,type_hermitian,tolerance=1e-5, verbose=False):
+    """
+    Perform Hermitian tree grafting on all constraint trees.
+    This function implements the 3rd major symmetry constraint: Hermiticity (H† = H).
+    It iterates through all root vertices and attempts to graft each one onto existing
+    trees if a Hermitian conjugate relationship exists.
+
+    Algorithm:
+    ---------
+    1. Deep copy all roots to avoid modifying the input
+    2. Initialize roots_grafted_hermitian with the 0th root
+    3. For each remaining root:
+        a. Try to graft it onto any existing root in roots_grafted_hermitian
+        b. If grafting succeeds: the root becomes a Hermitian child (dependent)
+        c. If grafting fails: add the root to roots_grafted_hermitian
+    4. Return the final collection of independent roots
+
+    Tree Structure After Grafting:
+    -----------------------------
+    Before:
+        Root A (independent)          Root B (independent)
+        ├── Child A0 (linear)         ├── Child B0 (linear)
+        └── Child A1 (linear)         └── Child B1 (linear)
+
+    After (if B is Hermitian conjugate of A):
+        Root A
+        ├── Child A0 (linear)
+        ├── Child A1 (linear)
+        └── Root B (hermitian) ← Now a child of A!
+            ├── Child B0 (linear)
+            └── Child B1 (linear)
+    Physical Meaning:
+    ----------------
+    For tight-binding models, Hermiticity requires:
+        H† = H  =>  T(i ← j) = T(j ← i)†
+    If root B is grafted as Hermitian child of root A:
+        T(B) = [V1(g) @ T(A) @ V2(g)†]†
+    where V1(g) and V2(g) are orbital representations of symmetry operation g.
+
+
+    Args:
+        roots_all (list): List of all root vertex objects from generate_all_trees_for_unit_cell.
+                          Each root represents an independent constraint tree built from
+                          space group symmetry around a center atom.
+        space_group_bilbao_cart (list of np.ndarray): Space group operations in Cartesian
+                                                      coordinates using Bilbao origin.
+                                                      Shape: num_ops × 3 × 4 matrices [R|t]
+        lattice_basis (np.ndarray): Primitive lattice basis vectors (3×3 array).
+                                    Each row is a basis vector in Cartesian coordinates
+                                    using Bilbao origin.
+        type_hermitian (str): String identifier for Hermitian constraint type.
+                              value: "hermitian".
+                              This label is assigned to grafted hermitian roots.
+        tolerance (float, optional): Numerical tolerance for coordinate and distance
+                                     comparisons. Default: 1e-5
+        verbose (bool, optional): Print detailed diagnostics for debugging.
+                                  Default: False
+
+    Returns:
+            list: Collection of  root vertex objects after Hermitian grafting.
+                    Each root in this list is a family of hopping matrices under linear or hermitian constraint
+            Structure:
+                    - Roots that were successfully grafted as Hermitian children are NOT in this list
+                    - Their subtrees are now attached to their parent roots
+                    The number of roots decreases: len(returned_list) ≤ len(roots_all)
+    Side Effects:
+        - Creates deep copy of roots_all (input is not modified)
+        - Modifies the copied tree structures in-place during grafting
+        - Trees grow as Hermitian children are added
+        - Some roots lose their root status (is_root: True → False)
+
+    Algorithm Complexity:
+        Time: O(n² × m) where:
+              n = len(roots_all)
+              m = number of space group operations
+        Space: O(n) for deep copy of all roots
+    Notes:
+        - Order matters: first root becomes basis for grafting
+        - "First match wins" strategy in grafting_to_existing_hermitian
+        - Deep copy ensures input roots_all remains unchanged
+        - Grafted roots maintain their entire subtree (children move with parent)
+    """
+    # ==============================================================================
+    # STEP 1: Initialize working variables
+    # ==============================================================================
+    # Get total number of roots to process
+    roots_all_num=len(roots_all)
+    if verbose:
+        print("\n" + "=" * 80)
+        print("HERMITIAN TREE GRAFTING")
+        print("=" * 80)
+        print(f"Total roots to process: {roots_all_num}")
+        print(f"Tolerance: {tolerance}")
+    # Deep copy all roots to avoid modifying the input
+    # CRITICAL: This creates completely independent tree structures
+    # - Each root and its entire subtree (children) are copied
+    # - Parent-child references within each tree are preserved in the copy
+    # - But the copied trees are independent of the original roots_all
+    roots_all_num = len(roots_all)
+    if verbose:
+        print("\n" + "=" * 80)
+        print("HERMITIAN TREE GRAFTING")
+        print("=" * 80)
+        print(f"Total roots to process: {roots_all_num}")
+        print(f"Tolerance: {tolerance}")
+
+    roots_all_copy = deepcopy(roots_all)
+    if verbose:
+        print(f"Created deep copy of all {roots_all_num} roots")
+
+    roots_grafted_hermitian = [roots_all_copy[0]]
+    if verbose:
+        print(f"\nInitialized roots_grafted_hermitian with first root:")
+        print(f"  {roots_all_copy[0]}")
+        print(f"  Hopping: {roots_all_copy[0].hopping}")
+
+    for j in range(1, roots_all_num):
+        root_to_be_grafted = roots_all_copy[j]
+        if verbose:
+            print(f"\n{'-' * 60}")
+            print(f"Processing root {j}/{roots_all_num - 1}")
+            print(f"{'-' * 60}")
+            print(f"Root to be grafted: {root_to_be_grafted}")
+            print(f"Hopping: {root_to_be_grafted.hopping}")
+            print(f"Current independent roots: {len(roots_grafted_hermitian)}")
+
+        was_grafted = grafting_to_existing_hermitian(
+            roots_grafted_hermitian,
+            root_to_be_grafted,
+            space_group_bilbao_cart,
+            lattice_basis,
+            type_hermitian,
+            tolerance,
+            verbose
+        )
+
+        # CRITICAL FIX: Correct indentation for the else block
+        if was_grafted:
+            if verbose:
+                print(f"\n✓ Root {j} successfully grafted as Hermitian child")
+                print(f"  Type: {root_to_be_grafted.type}")
+                print(f"  Is root: {root_to_be_grafted.is_root}")
+                print(f"  Parent: {root_to_be_grafted.parent.hopping if root_to_be_grafted.parent else None}")
+                print(f"  Remaining independent roots: {len(roots_grafted_hermitian)}")
+        else:  # THIS ELSE WAS INCORRECTLY INDENTED IN YOUR CODE
+            roots_grafted_hermitian.append(root_to_be_grafted)
+            if verbose:
+                print(f"\n✗ Root {j} could not be grafted - adding as independent root")
+                print(f"  Total independent roots: {len(roots_grafted_hermitian)}")
+
+    if verbose:
+        print("\n" + "=" * 80)
+        print("HERMITIAN GRAFTING COMPLETE")
+        print("=" * 80)
+        print(f"Initial roots: {roots_all_num}")
+        print(f"Final independent roots: {len(roots_grafted_hermitian)}")
+        print(f"Roots grafted: {roots_all_num - len(roots_grafted_hermitian)}")
+
+        print(f"\nFinal Independent Roots:")
+        for i, root in enumerate(roots_grafted_hermitian):
+            total_children = len(root.children)
+            hermitian_children = sum(1 for child in root.children if child.type == type_hermitian)
+            linear_children = total_children - hermitian_children
+            print(f"\n  Root {i}:")
+            print(f"    {root}")
+            print(f"    Hopping: {root.hopping}")
+            print(f"    Total children: {total_children}")
+            print(f"      Linear: {linear_children}")
+            print(f"      Hermitian: {hermitian_children}")
+
+    return roots_grafted_hermitian
+
+
+roots_all=generate_all_trees_for_unit_cell(unit_cell_atoms,all_neighbors,space_group_bilbao_cart,identity_idx,type_linear,True)
+# print_all_trees(roots_all)
+# root_a=roots_all[0]
+# root_b=roots_all[2]
+# print(f"root_a={root_a}")
+# is_hermitian,op_idx,n_vec=check_hopping_hermitian(
+# root_a.hopping,root_b.hopping,
+# space_group_bilbao_cart,     # All space group operations to try
+#             lattice_basis,
+#     1e-5,True
+# )
+# print(f"is_hermitian={is_hermitian}")
+# print(f"lattice_basis={lattice_basis}")
+
+roots_grafted_hermitian=tree_grafting_hermitian(roots_all,
+                                                space_group_bilbao_cart,
+                                                lattice_basis,
+                                                type_hermitian
+                                                )
+
+
+print_all_trees(roots_grafted_hermitian)
