@@ -2873,161 +2873,77 @@ def grafting_to_existing_hermitian(roots_grafted_hermitian,root_to_be_grafted,sp
     """
     Attempt to graft a new tree onto an existing collection of Hermitian-connected trees.
 
-    This function checks if root_to_be_grafted is the Hermitian conjugate of any tree
-    in the roots_grafted_hermitian collection. If a Hermitian relationship is found,
-    the new tree is grafted onto the matching tree and incorporated into the collection.
+    This function checks if `root_to_be_grafted` is the Hermitian conjugate of any root
+    already in the `roots_grafted_hermitian` collection. If a Hermitian relationship is found,
+    the new tree is grafted onto the matching root as a dependent child.
 
     Grafting Strategy:
     -----------------
     This function implements an "early exit" strategy:
-    - Iterate through existing Hermitian-grafted trees
-    - Check each one for Hermitian relationship with the new tree
-    - On first match, graft and immediately return True
-    - If no matches found after checking all, return False
+    - Iterate through existing Hermitian-grafted trees.
+    - Check each one for a Hermitian relationship with the new tree.
+    - On the first match, graft and immediately return True.
+     - If no matches are found after checking all, return False.
 
     Use Case:
     --------
-    This is called when finding the Hermiticity constraints between roots.
-    As each new root is encountered, we check if it can be grafted onto any existing
-    tree in roots_grafted_hermitian. If yes, it joins that tree. If no, check the next tree
-    in  roots_grafted_hermitian, until all trees are iterated.
+    This is called when imposing Hermiticity constraints on the hopping parameters.
+    As each new root is encountered, we check if it is the conjugate of a root
+    we have already processed.
 
 
     Args:
-        roots_grafted_hermitian  (list): List of root vertex objects representing
-                                         roots that may accept hermitian tree grafting.
-                                         IMPORTANT: Modified in-place when grafting occurs
-                                       (tree structures grow, but list itself unchanged).
-        root_to_be_grafted (vertex): New root vertex attempting to be grafted.
-                                     If grafting succeeds
+        roots_grafted_hermitian (list): List of root vertex objects representing
+                                        roots that have already been processed.
+                                        IMPORTANT: Modified in-place when grafting occurs
+                                        (tree structures grow, but list itself is unchanged).
+        root_to_be_grafted (vertex):  New root vertex attempting to be grafted.
+                                     If grafting succeeds:
                                      - Becomes a hermitian child of a root in roots_grafted_hermitian
                                      - is_root changes from True to False
                                      - type changes from None to type_hermitian
                                      - Entire subtree moves with it
                                      If grafting fails:
                                      - Remains independent
-
-        space_group_bilbao_cart (list of np.ndarray): Space group operations in Cartesian
-                                                      coordinates using Bilbao origin.
-        lattice_basis: Primitive lattice basis vectors (3×3 array).
-                       Each row is a basis vector in Cartesian coordinates
-                       using Bilbao origin.
-        type_hermitian (str): String identifier for Hermitian constraint type.
-                              value:  "hermitian".
-                              Assigned to root_to_be_grafted.type upon successful grafting.
-        tolerance (float, optional): Numerical tolerance for coordinate and distance
-                                      comparisons. Default: 1e-5
-        verbose (bool, optional):  Print detailed diagnostics for debugging.
-                                   Default: False
+        space_group_bilbao_cart (list):  Space group operations in Cartesian coordinates.
+        lattice_basis (np.ndarray): Primitive lattice basis vectors.
+        type_hermitian (str): String identifier for Hermitian constraint type ("hermitian").
+        tolerance (float): Numerical tolerance for comparisons (default: 1e-5).
+        verbose (bool): Print detailed diagnostics (default: False).
 
     Returns:
-         bool: True if root_to_be_grafted was successfully grafted onto one of the
-               existing roots in roots_grafted_hermitian.
-               False if no Hermitian relationship found with any existing root.
-    Side Effects:
-            If grafting succeeds (returns True):
-            - One root in roots_grafted_hermitian gains root_to_be_grafted as a Hermitian child
-            - root_to_be_grafted.is_root: True → False
-            - root_to_be_grafted.type: None → type_hermitian
-            - root_to_be_grafted.parent: None → matching root from roots_grafted_hermitian
-            - root_to_be_grafted.hopping.operation_idx: Updated to symmetry operation index
-            - root_to_be_grafted.hopping.n_vec: Updated to lattice translation vector
-            - Entire subtree under root_to_be_grafted moves as a unit
-
-            The roots_grafted_hermitian list itself is NOT modified (same number of elements),
-            but the tree structures it contains ARE modified (one tree gains a new Hermitian subtree).
+        bool: True if root_to_be_grafted was successfully grafted onto one of the
+              existing roots in roots_grafted_hermitian.
+              False if no Hermitian relationship found with any existing root.
 
     Physical Meaning:
-    If grafting succeeds with root1 ∈ roots_grafted_hermitian:
-    T(root_to_be_grafted) = [V1(g)T(root1)V2(g)†]†
-
-    Algorithm Complexity:
-            Time: O(n × m) where:
-            n = len(roots_grafted_hermitian)
-            m = number of space group operations (checked in check_hopping_hermitian)
-            Space: O(1) (in-place modification, no new data structures)
-    Notes:
-        - Uses "first match wins" - grafts to first Hermitian conjugate found
-        - Order of roots_grafted_hermitian affects which tree receives the graft
-        - If multiple Hermitian relationships exist, only first is used
-        - Early exit optimization: stops after first successful graft
+    ----------------
+    If grafting succeeds with root1 ∈ roots_grafted_hermitian, the hopping matrix T
+    is constrained by:
+        T(root_to_be_grafted) = [V1(g) @ T(root1) @ V2(g)†]†
 
     """
-    # ==============================================================================
-    # MAIN LOOP: Search for Hermitian relationship with existing roots
-    # ==============================================================================
-    # Iterate through each root that has already been processed for Hermitian grafting
-    # These roots may already have Hermitian children from previous grafting operations
+    # Iterate through each root that has already been processed
     for root1 in roots_grafted_hermitian:
-        # ======================================================================
-        # STEP 1: Check Hermitian conjugate relationship
-        # ======================================================================
-        # Test if root_to_be_grafted is the Hermitian conjugate of root1
-        # under some space group symmetry operation with lattice translation
-        #
-        # Mathematically checks if ∃ symmetry operation g=(R|t) and lattice shift n_vec
-        # such that the hopping vectors satisfy:
-        #   R @ (center1 - neighbor1) + t + n_vec·[a₀,a₁,a₂] = neighbor2 - center2
-        #
-        # where (center1 ← neighbor1) is root1's hopping
-        #   and (center2 ← neighbor2) is root_to_be_grafted's hopping (needs to be reversed)
-        is_hermitian,op_idx,n_vec=check_hopping_hermitian(
-            root1.hopping,               # Reference hopping from existing root
-            root_to_be_grafted.hopping,  # Candidate hopping to be grafted
-            space_group_bilbao_cart,     # All space group operations to try
-            lattice_basis,               # Crystal lattice vectors [a₀, a₁, a₂]
-            tolerance,                   # Numerical precision threshold
-            verbose                      # Enable debug output if True
+        # Attempt to graft the new root onto the existing root1 as a Hermitian child
+        # add_to_root_hermitian handles the check and the structural update if successful
+        success=add_to_root_hermitian(
+            root1,
+            root_to_be_grafted,
+            space_group_bilbao_cart,
+            lattice_basis,
+            type_hermitian, tolerance, verbose
         )
-        # ======================================================================
-        # STEP 2: Perform grafting if Hermitian relationship found
-        # ======================================================================
-        if is_hermitian==True:
-            # ✓ Hermitian conjugate relationship confirmed!
-            # Now graft root_to_be_grafted onto root1 as a Hermitian child
-            #
-            # This operation will:
-            # 1. Add root_to_be_grafted to root1.children list (as a reference, not copy)
-            # 2. Set root_to_be_grafted.parent = root1 (bidirectional link)
-            # 3. Set root_to_be_grafted.is_root = False (no longer independent)
-            # 4. Set root_to_be_grafted.type = type_hermitian (mark constraint type)
-            # 5. Store symmetry info: root_to_be_grafted.hopping.operation_idx = op_idx
-            # 6. Store lattice shift: root_to_be_grafted.hopping.n_vec = n_vec
-            #
-            # Physical consequence:
-            # T(root_to_be_grafted) = [V1(g)T(root1)V2(g)†]†
-            #   No new free parameters needed - hopping matrix is fully determined
-            add_to_root_hermitian(
-                root1,                      # Parent: existing root
-                root_to_be_grafted,         # Child: tree being grafted (becomes dependent)
-                space_group_bilbao_cart,    # Space group operations
-                lattice_basis,              # Lattice vectors
-                type_hermitian,             # Constraint type label, "hermitian"
-                tolerance,                  # Numerical precision
-                verbose                     # Debug output flag
-            )
-            # ==================================================================
-            # EARLY EXIT: Grafting successful
-            # ==================================================================
-            # We successfully grafted root_to_be_grafted onto root1
-            # No need to check remaining roots in roots_grafted_hermitian
-            #
-            # Early exit benefits:
-            # - Saves computation (don't check remaining roots)
-            # - Prevents multiple grafting (tree can only have one parent)
-            # - First match wins
-            #
-            # Return True to signal successful grafting to caller
+        if success == True:
+            # Early exit: We found a parent!
+            # The tree is now grafted, so we stop searching.
+            if verbose:
+                print(f"  ✓ Grafted via Hermitian constraint onto: {root1.hopping}")
             return True
-    # ==============================================================================
-    # NO HERMITIAN RELATIONSHIP FOUND
-    # ==============================================================================
-    # We've iterated through ALL roots in roots_grafted_hermitian
-    # and found NO Hermitian conjugate relationship
-    #
-    # This means root_to_be_grafted cannot be grafted to any existing  root in  roots_grafted_hermitian
-    # Return False to signal grafting was not possible
+    # If we finish the loop without returning, no Hermitian relationship was found
     return False
+
+
 
 
 def tree_grafting_hermitian(roots_all,space_group_bilbao_cart,lattice_basis,type_hermitian,tolerance=1e-5, verbose=False):
@@ -3116,13 +3032,6 @@ def tree_grafting_hermitian(roots_all,space_group_bilbao_cart,lattice_basis,type
     # STEP 1: Initialize working variables
     # ==============================================================================
     # Get total number of roots to process
-    roots_all_num=len(roots_all)
-    if verbose:
-        print("\n" + "=" * 80)
-        print("HERMITIAN TREE GRAFTING")
-        print("=" * 80)
-        print(f"Total roots to process: {roots_all_num}")
-        print(f"Tolerance: {tolerance}")
     # Deep copy all roots to avoid modifying the input
     # CRITICAL: This creates completely independent tree structures
     # - Each root and its entire subtree (children) are copied
@@ -3202,6 +3111,355 @@ def tree_grafting_hermitian(roots_all,space_group_bilbao_cart,lattice_basis,type
 
     return roots_grafted_hermitian
 
+def check_hopping_linear(hopping1,hopping2, space_group_bilbao_cart,
+                            lattice_basis, tolerance=1e-5, verbose=False):
+    """
+    Check if hopping2 is related to hopping1 by a space group symmetry operation
+     For tight-binding models, a linear symmetry constraint implies:
+        T(hopping2) = V1(g) @ T(hopping1) @ V2(g)†
+     Geometrically, this function checks if the displacement vector of hopping2
+    is the result of applying a space group operation plus a lattice shift to the displacement vector of hopping1.
+
+    Mathematical Condition:
+    ----------------------
+    Given hopping1 vector: r1 = center1 - neighbor1
+    Given hopping2 vector: r2 = center2 - neighbor2
+
+    hopping2 is linearly related to hopping1 if there exists a space group
+    operation g = (R|t) and lattice shift n_vec = [n0, n1, n2] such that:
+        R @ r1 + t + n_vec·[a0,a1,a2] = r2
+
+    Args:
+        hopping1: First hopping object (reference hopping)
+        hopping2: Second hopping object (candidate symmetry equivalent)
+        space_group_bilbao_cart: List of space group matrices in Cartesian coordinates
+        lattice_basis: Primitive lattice basis vectors (3×3 array)
+        tolerance: Numerical tolerance for comparison (default: 1e-5)
+        verbose: Whether to print debug information (default: False)
+
+    Returns:
+        tuple: (is_linear, operation_idx, n_vec)
+         - is_linear (bool): True if hopping2 is related to hopping1 via symmetry
+         - operation_idx (int or None): Index of the space group operation
+         - n_vec (ndarray or None): Lattice translation vector [n0, n1, n2]
+    """
+    # ==============================================================================
+    # STEP 1: Extract atoms and validate types
+    # ==============================================================================
+    # hopping1: to_atom1 (center) ← from_atom1 (neighbor)
+    to_atom1 = hopping1.to_atom
+    from_atom1 = hopping1.from_atom
+    # hopping2: to_atom2 (center) ← from_atom2 (neighbor)
+    to_atom2=hopping2.to_atom
+    from_atom2=hopping2.from_atom
+
+    to_atom1_name = to_atom1.atom_name
+    from_atom1_name = from_atom1.atom_name
+
+    to_atom2_name=to_atom2.atom_name
+    from_atom2_name=from_atom2.atom_name
+
+    dist1 = hopping1.distance
+    dist2 = hopping2.distance
+
+    # Check 1: Hopping distances must be identical (isometry)
+    if np.abs(dist1-dist2)>tolerance:
+        return False, None, None
+    # Check 2: Atom types must match for a valid symmetry operation
+    # A symmetry operation maps an atom to another atom of the SAME species
+    if to_atom1_name!=to_atom2_name or from_atom1_name!=from_atom2_name:
+        return False, None, None
+
+    # ==============================================================================
+    # STEP 2: Compute hopping vectors
+    # ==============================================================================
+    # Displacement vector for hopping1
+    hopping_vec1=to_atom1.cart_coord - from_atom1.cart_coord
+    # Displacement vector for hopping2
+    hopping_vec2=to_atom2.cart_coord-from_atom2.cart_coord
+    if verbose:
+        print(f"\nChecking Linear Relationship:")
+        print(f"  Vec1: {hopping_vec1}")
+        print(f"  Vec2: {hopping_vec2}")
+    # ==============================================================================
+    # STEP 3: Search for space group operation
+    # ==============================================================================
+    for op_idx in range(len(space_group_bilbao_cart)):
+        # Extract rotation R and translation t from space group operation
+        R, t = get_rotation_translation(space_group_bilbao_cart, op_idx)
+        # Apply rotation and translation to hopping_vec1
+        # transformed = R @ r1 + t
+        transformed_vec = R @ hopping_vec1 + t
+
+        # Calculate required lattice shift
+        # We need: transformed_vec + n_vec·basis = hopping_vec2
+        # Therefore: n_vec·basis = hopping_vec2 - transformed_vec
+        required_lattice_shift = hopping_vec2 - transformed_vec
+
+        # Check if required_lattice_shift is a lattice vector
+        is_lattice, n_vec = is_lattice_vector(
+            required_lattice_shift,
+            lattice_basis,
+            tolerance
+        )
+
+        if is_lattice:
+            # Double-check: verify the transformation explicitly
+            a0, a1, a2 = lattice_basis[0], lattice_basis[1], lattice_basis[2]
+            n0, n1, n2 = n_vec[0], n_vec[1], n_vec[2]
+            lattice_translation = n0 * a0 + n1 * a1 + n2 * a2
+            # Full transformation: R @ hopping_vec1 + t + n_vec·[a0,a1,a2]
+            full_transform = transformed_vec + lattice_translation
+            # Check difference
+            difference = hopping_vec2 - full_transform
+            if np.linalg.norm(difference) < tolerance:
+                if verbose:
+                    print(f"  ✓ Match found at op_idx={op_idx}, n_vec={n_vec}")
+                return True, op_idx, n_vec.astype(int)
+            elif verbose:
+                print(f"  ✗ Lattice vector found but transformation doesn't match")
+                print(f"    Difference: {np.linalg.norm(difference):.2e}")
+
+    # ==============================================================================
+    # No linear relationship found
+    # ==============================================================================
+    return False, None, None
+
+def add_to_root_linear(root1, root2, space_group_bilbao_cart,
+                          lattice_basis, type_linear, tolerance=1e-5, verbose=False):
+    """
+    Attempt to graft root2 onto root1 as a linear child if a symmetry relationship exists.
+     This function checks if root2's hopping can be generated from root1's hopping
+    by applying a space group operation (rotation + translation + lattice shift).
+    If a valid linear relationship is found, root2 is attached to root1 in the
+    constraint tree.
+
+    Physical Meaning:
+    ----------------
+    If successful, the hopping matrix T2 (of root2) is constrained by T1 (of root1):
+        T2 = V1(g) @ T1 @ V2(g)†
+    where V(g) are the orbital representation matrices for the symmetry operation g.
+    Args:
+        root1: First root vertex (parent candidate).
+        root2: Second root vertex (child candidate).
+        space_group_bilbao_cart: List of space group matrices in Cartesian coordinates.
+        lattice_basis: Primitive lattice basis vectors (3×3 array).
+        type_linear: String identifier for linear constraint type, value: "linear".
+        tolerance: Numerical tolerance for comparison (default: 1e-5).
+        verbose: Whether to print debug information (default: False).
+
+    Returns:
+        bool: True if root2 was successfully grafted as a linear child of root1.
+              False otherwise.
+    Side Effects:
+    -------------
+    If returns True:
+        - root1.children gains root2
+        - root2.parent becomes root1
+        - root2.is_root becomes False
+        - root2.type becomes type_linear
+        - root2.hopping.operation_idx and n_vec are updated to reflect the symmetry transform.
+
+    """
+    hopping1 = root1.hopping
+    hopping2 = root2.hopping
+    #check if hopping2 can be obtained linearly from hopping1
+    # This verifies: R @ r1 + t + n_vec·basis = r2
+    is_linear, op_idx, n_vec=check_hopping_linear(
+        hopping1,hopping2,
+        space_group_bilbao_cart,
+        lattice_basis, tolerance, verbose
+    )
+    if is_linear==True:
+        # ======================================================================
+        # Perform Grafting
+        # ======================================================================
+        # 1. Add root2 as root1's child (updates root1.children and root2.parent)
+        root1.add_child(root2)
+
+        # 2. Update root2 properties to reflect its dependent status
+        root2.type = type_linear
+        root2.is_root = False
+
+        # root2.parent is already set by add_child, but explicitly:
+        root2.parent = root1
+
+        # 3. Store the symmetry parameters required to generate T2 from T1
+        root2.hopping.operation_idx = op_idx
+        root2.hopping.n_vec = deepcopy(n_vec)
+        return True
+    else:
+        return False
+
+
+def grafting_to_existing_linear(roots_grafted_linear,root_to_be_grafted,space_group_bilbao_cart,lattice_basis,type_linear,tolerance=1e-5, verbose=False):
+    """
+    Attempt to graft a new tree onto an existing collection of linear-connected trees.
+    This function checks if `root_to_be_grafted` is related by a space group symmetry
+    operation to any root already in the `roots_grafted_linear` collection. If a
+    linear relationship is found, the new tree is grafted onto the matching root
+    as a child, making it dependent.
+    Grafting Strategy:
+    -----------------
+    This function implements an "early exit" strategy:
+    - Iterate through existing linear-grafted roots.
+     - Check each one for a linear symmetry relationship with the new tree.
+     - On the first match, graft and immediately return True.
+     - If no matches are found after checking all, return False.
+
+     Use Case:
+     --------
+    This is called when reducing the number of independent hopping parameters.
+     As each new root is encountered, we check if it is merely a symmetry copy
+     of a root we have already processed.
+
+    Args:
+        roots_grafted_linear (list): List of root vertex objects representing
+                                     roots that have already been processed/accepted.
+                                     IMPORTANT: Modified in-place when grafting occurs
+                                     (tree structures grow, but list itself is unchanged).
+        root_to_be_grafted: New root vertex attempting to be grafted.
+                                     If grafting succeeds:
+                                     - Becomes a linear child of a root in roots_grafted_linear
+                                     - is_root changes from True to False
+                                     - type changes from None to type_linear
+                                     - Entire subtree moves with it
+                                     If grafting fails:
+                                     - Remains independent (caller usually adds it to the list)
+        space_group_bilbao_cart (list): Space group operations in Cartesian coordinates.
+        lattice_basis (np.ndarray): Primitive lattice basis vectors.
+        type_linear (str): String identifier for linear constraint type ("linear").
+        tolerance: Numerical tolerance for comparisons (default: 1e-5).
+        verbose: Print detailed diagnostics (default: False).
+
+    Returns:
+        bool: True if root_to_be_grafted was successfully grafted onto one of the
+               existing roots in roots_grafted_linear.
+               False if no linear relationship found with any existing root.
+
+    """
+    # Iterate through each root that has already been accepted as independent
+    for root1 in roots_grafted_linear:
+        # Attempt to graft the new root onto the existing root1
+        # add_to_root_linear handles the check and the structural update if successful
+        success=add_to_root_linear(
+            root1,
+            root_to_be_grafted,
+            space_group_bilbao_cart,
+            lattice_basis,
+            type_linear, tolerance, verbose
+        )
+        if success==True:
+            # Early exit: We found a parent!
+            # The tree is now grafted, so we stop searching.
+            if verbose:
+                print(f"  ✓ Grafted onto existing root: {root1.hopping}")
+            return True
+    # If we finish the loop without returning, no parent was found
+    return False
+
+
+
+
+def tree_grafting_linear(roots_all,space_group_bilbao_cart,lattice_basis,type_linear,tolerance=1e-5, verbose=False):
+    """
+    Perform Linear tree grafting on all constraint trees.
+     This function implements a symmetry reduction step based on linear constraint. It iterates through
+     all root vertices and attempts to graft each one onto existing trees if a linear symmetry relationship exists.
+
+    Algorithm:
+    ---------
+    1. Deep copy all roots to avoid modifying the input.
+    2. Initialize roots_grafted_linear with the 0th root.
+    3. For each remaining root:
+        a. Try to graft it onto any existing root in roots_grafted_linear using
+           space group symmetry (rotation + translation + lattice shift).
+        b. If grafting succeeds: the root becomes a linear child (dependent).
+        c. If grafting fails: add the root to roots_grafted_linear as a new independent root.
+    4. Return the final collection of independent roots.
+
+     Tree Structure After Grafting:
+     -----------------------------
+     Before:
+        Root A (independent)          Root B (independent)
+    After (if B is symmetry equivalent to A):
+        Root A
+        ├── ... (existing children)
+        └── Root B (linear) ← Now a child of A!
+            └── ... (B's subtree moves with it)
+
+    Physical Meaning:
+    ----------------
+    If root B is grafted as a linear child of root A, it implies that the hopping
+    matrix represented by B is not  free, but is related to A by symmetry:
+        T(B) = V1(g) @ T(A) @ V2(g)†
+
+
+    Args:
+        roots_all (list): List of root vertex objects
+        space_group_bilbao_cart (list): Space group operations in Cartesian coordinates.
+        lattice_basis (np.ndarray): Primitive lattice basis vectors.
+        type_linear (str): String identifier for linear constraint type ("linear").
+        tolerance (float): Numerical tolerance for comparisons (default: 1e-5).
+        verbose (bool): Print detailed diagnostics (default: False).
+
+    Returns:
+        list: Collection of root vertex objects after Linear grafting.
+
+    """
+    # ==============================================================================
+    # STEP 1: Initialize working variables
+    # ==============================================================================
+    roots_all_num = len(roots_all)
+    if verbose:
+        print("\n" + "=" * 80)
+        print("LINEAR TREE GRAFTING")
+        print("=" * 80)
+        print(f"Total roots to process: {roots_all_num}")
+
+    # Deep copy to ensure input list remains unmodified
+    roots_all_copy = deepcopy(roots_all)
+
+    # Initialize the list of independent roots with the 0th one
+    roots_grafted_linear = [roots_all_copy[0]]
+    if verbose:
+        print(f"Initialized roots_grafted_linear with first root: {roots_all_copy[0].hopping}")
+    # ==============================================================================
+    # STEP 2: Iterate through remaining roots and attempt grafting
+    # ==============================================================================
+    for j in range(1, roots_all_num):
+        root_to_be_grafted = roots_all_copy[j]
+
+        if verbose:
+            print(f"\n{'-' * 60}")
+            print(f"Processing root {j}/{roots_all_num - 1}")
+            print(f"Hopping: {root_to_be_grafted.hopping}")
+
+        # Attempt to graft onto existing independent roots
+        was_grafted = grafting_to_existing_linear(
+            roots_grafted_linear,
+            root_to_be_grafted,
+            space_group_bilbao_cart,
+            lattice_basis,
+            type_linear,
+            tolerance,
+            verbose  # Pass verbose flag down
+        )
+        if was_grafted==True:
+            if verbose:
+                print(f"✓ Root {j} successfully grafted as Linear child")
+            # Note: root_to_be_grafted is now attached to a parent in roots_grafted_linear
+
+        else:
+            # If no relationship found, this root remains independent
+            roots_grafted_linear.append(root_to_be_grafted)
+    return roots_grafted_linear
+
+
+
+
+
+
 
 roots_all=generate_all_trees_for_unit_cell(unit_cell_atoms,all_neighbors,space_group_bilbao_cart,identity_idx,type_linear,True)
 # print_all_trees(roots_all)
@@ -3216,12 +3474,16 @@ roots_all=generate_all_trees_for_unit_cell(unit_cell_atoms,all_neighbors,space_g
 # )
 # print(f"is_hermitian={is_hermitian}")
 # print(f"lattice_basis={lattice_basis}")
-
+#
 roots_grafted_hermitian=tree_grafting_hermitian(roots_all,
                                                 space_group_bilbao_cart,
                                                 lattice_basis,
                                                 type_hermitian
                                                 )
+roots_grafted_linear=tree_grafting_linear(roots_grafted_hermitian,
+                                          space_group_bilbao_cart,
+                                          lattice_basis,
+                                          type_linear
+                                    )
 
-
-print_all_trees(roots_grafted_hermitian)
+print_all_trees(roots_grafted_linear)
