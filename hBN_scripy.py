@@ -1202,7 +1202,7 @@ atom_types, fractional_positions, unit_cell_atoms = initialize_unit_cell_atoms(
     repr_d_np,# d orbital representations (num_ops × 5 × 5)
     repr_f_np # f orbital representations (num_ops × 7 × 7)
 )
-
+print(f"unit_cell_atoms={unit_cell_atoms}")
 
 # ==============================================================================
 # Define neighbor search parameters
@@ -1476,7 +1476,7 @@ def get_next_for_center(center_atom, seed_atom, center_seed_distance, space_grou
             if verbose:
                 print(f"  ✗ Hopping distance NOT preserved - returning None")
                 print(f"  WARNING: This may indicate a problem with the symmetry operation")
-                return None
+            return None
 
     else:
         # ==============================================================================
@@ -1488,7 +1488,7 @@ def get_next_for_center(center_atom, seed_atom, center_seed_distance, space_grou
             print(f"\n✗ Center atom is NOT invariant under operation {operation_idx}")
             print(f"  Returning None (no equivalent position generated)")
             print(f"  This operation maps center to a different atomic site")
-            return None
+        return None
 
 
 
